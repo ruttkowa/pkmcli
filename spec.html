@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en"> <head> <meta charset="utf-8"> <title>PKM TUI Specification</title> </head> <body>
+<h1>PKM TUI System Specification</h1>
+<h2>Project Goal</h2>
+<p> Build a local-first Personal Knowledge Management (PKM) application inspired by Neovim, Zellij, LazyGit and Obsidian. </p>
+<p> The application is not an editor. It is a navigation, organization and knowledge management layer built around Markdown files. </p>
+<p> Editing is delegated to an external editor. </p>
+<hr>
+<h2>Core Principles</h2>
+<ul> <li>Local-first</li> <li>Markdown-only</li> <li>Git-first</li> <li>No AI integration</li> <li>No attachments</li> <li>No plugin system in v1</li> <li>No graph view in v1</li> <li>No query language in v1</li> <li>Keyboard-first</li> <li>Mouse-capable</li> <li>Opinionated workflow</li> </ul>
+<hr>
+<h2>Knowledge Management Model</h2>
+<p> The system follows a PARA-inspired workflow. </p>
+<h3>States</h3>
+<ul> <li>Inbox</li> <li>Projects</li> <li>Areas</li> <li>Research</li> <li>Archive</li> </ul>
+<h3>Rules</h3>
+<ul> <li>All new notes are created in Inbox.</li> <li>Notes must be explicitly promoted.</li> <li>Maximum of 4 active projects.</li> <li>Archive is the final inactive state.</li> </ul>
+<h3>Lifecycle</h3>
+<pre> Inbox ├──► Project │ │ │ └──► Archive │ ├──► Area │ │ │ └──► Archive │ └──► Research │ └──► Archive </pre>
+<hr>
+<h2>Storage Format</h2>
+<h3>Files</h3>
+<p> All notes are Markdown files. </p>
+<p> Filename format: </p>
+<pre> &lt;ID&gt; &lt;Title&gt;.md </pre>
+<p> Example: </p>
+<pre> 202606241530 Docker.md </pre>
+<h3>Frontmatter</h3>
+<pre> --- id: 202606241530 title: Docker created: 2026-06-24T15:30:00 updated: 2026-06-24T15:45:00 state: research project: tags: - linux - containers --- </pre>
+<hr>
+<h2>Vault Structure</h2>
+<pre> vault/ ├── notes/ ├── templates/ ├── .pkm/ │ ├── config.toml │ ├── projects.toml │ └── index.db └── .git/ </pre>
+<p> No content-based folder hierarchy. Organization happens through metadata, tags and states. </p>
+<hr>
+<h2>Tags</h2>
+<ul> <li>Tags are stored in frontmatter.</li> <li>Tags replace most folder organization.</li> <li>Tags are first-class organizational elements.</li> </ul>
+<p>Example:</p>
+<pre> tags: - linux - homelab - server </pre>
+<hr>
+<h2>Links</h2>
+<h3>Supported Syntax</h3>
+<pre> [[Docker]] [[Docker|Container Runtime]] </pre>
+<h3>Behavior</h3>
+<ul> <li>Links can point to non-existing notes.</li> <li>Missing notes are created when opened.</li> <li>Aliases are supported.</li> </ul>
+<h3>Edit Mode</h3>
+<pre> [[Docker|Container Runtime]] </pre>
+<h3>Read Mode</h3>
+<pre> Container Runtime </pre>
+<hr>
+<h2>Backlinks</h2>
+<p> Simple backlink list only. </p>
+<p> No graph visualization. </p>
+<hr>
+<h2>Search</h2>
+<h3>Version 1</h3>
+<ul> <li>Fuzzy search</li> <li>Title search</li> <li>Content search</li> <li>Tag search</li> </ul>
+<h3>Future</h3>
+<ul> <li>Query language</li> <li>Saved searches</li> <li>Dataview-like capabilities</li> </ul>
+<hr>
+<h2>Templates</h2>
+<p> Templates are stored as Markdown files. </p>
+<h3>Supported Variables</h3>
+<pre> {{id}} {{title}} {{created}} {{updated}} </pre>
+<h3>Future Variables</h3>
+<pre> {{input:name}} {{input:project}} </pre>
+<hr>
+<h2>Tasks</h2>
+<p> Tasks are Markdown checkboxes. </p>
+<pre> - [ ] Install Docker - [x] Configure SSH </pre>
+<p> No custom task syntax. </p>
+<p> Tasks may be indexed by the system. </p>
+<hr>
+<h2>Editor Model</h2>
+<p> The application is not a text editor. </p>
+<p> Editing is delegated to a configurable external editor. </p>
+<p> Examples: </p>
+<ul> <li>nvim</li> <li>vim</li> <li>helix</li> <li>emacs</li> </ul>
+<hr>
+<h2>User Interface</h2>
+<h3>Main Layout</h3>
+<pre> ┌──────────────────────────────────────────────┐ │ Breadcrumb / Context Bar │ ├──────────────┬───────────────────────────────┤ │ Sidebar │ Main Pane │ │ 25% │ 75% │ └──────────────┴───────────────────────────────┘ </pre>
+<h3>Sidebar</h3>
+<ul> <li>Inbox</li> <li>Projects</li> <li>Areas</li> <li>Research</li> <li>Archive</li> </ul>
+<h3>Main Pane</h3>
+<ul> <li>Markdown viewer</li> <li>Backlinks</li> <li>Tags</li> <li>Tasks</li> </ul>
+<hr>
+<h2>Pane System</h2>
+<p> The UI supports multiple panes. </p>
+<h3>Capabilities</h3>
+<ul> <li>Horizontal splits</li> <li>Resizable panes</li> <li>Mouse resizing</li> <li>Keyboard resizing</li> <li>Focus switching</li> </ul>
+<h3>Example</h3>
+<pre> ┌──────────────┬──────────────┐ │ Docker │ Linux │ └──────────────┴──────────────┘ </pre>
+<hr>
+<h2>Mouse Support</h2>
+<p> Mouse is supported but not required. </p>
+<h3>Supported Actions</h3>
+<ul> <li>Focus pane</li> <li>Resize pane</li> <li>Open link</li> <li>Select sidebar item</li> </ul>
+<hr>
+<h2>Navigation Model</h2>
+<p> Navigation behaves like a web browser. </p>
+<h3>Default Open</h3>
+<ul> <li>Click</li> <li>Enter</li> </ul>
+<p> Replaces current pane content. </p>
+<h3>Open In New Pane</h3>
+<ul> <li>Ctrl + Click</li> <li>Ctrl + Enter</li> </ul>
+<h3>History</h3>
+<ul> <li>Back</li> <li>Forward</li> <li>History is stored per pane</li> </ul>
+<hr>
+<h2>Application Startup</h2>
+<p> When the application starts: </p>
+<ul> <li>Restore previous session.</li> <li>Restore previous pane layout.</li> <li>Restore last opened note.</li> <li>Open in read mode.</li> </ul>
+<hr>
+<h2>Git Integration</h2>
+<p> The vault is expected to be a Git repository. </p>
+<p> Future UI integration may include: </p>
+<ul> <li>Modified notes</li> <li>Uncommitted changes</li> <li>Status overview</li> </ul>
+<hr>
+<h2>Index Architecture</h2>
+<h3>Approach</h3>
+<p> Hybrid indexing model. </p>
+<h3>Startup</h3>
+<ul> <li>Load persisted index.</li> <li>Perform validation scan.</li> </ul>
+<h3>Runtime</h3>
+<ul> <li>File watcher monitors vault.</li> <li>Incremental updates.</li> <li>Persistent cache.</li> </ul>
+<h3>Indexes</h3>
+<ul> <li>Full-text index</li> <li>Tag index</li> <li>Link index</li> <li>Backlink index</li> <li>Metadata index</li> </ul>
+<hr>
+<h2>Command System</h2>
+<p> Commands are executed through a command palette. </p>
+<p> Activation: </p>
+<pre> : </pre>
+<h3>Examples</h3>
+<pre> :new "Docker" :open docker :search docker :move docker → project/homelab :archive docker :split docker </pre>
+<h3>Features</h3>
+<ul> <li>Autocomplete</li> <li>Fuzzy matching</li> <li>Command suggestions</li> <li>Note suggestions</li> <li>Tag suggestions</li> <li>Project suggestions</li> </ul>
+<hr>
+<h2>Command DSL</h2>
+<h3>General Form</h3>
+<pre> :&lt;command&gt; [target] [arguments] [→ destination] </pre>
+<h3>Examples</h3>
+<pre> :new "Docker" :open docker :move docker → project/homelab :archive docker :split docker </pre>
+<hr>
+<h2>State Model Direction</h2>
+<p> Future implementation should be state-driven. </p>
+<p> Commands mutate state. State emits events. UI reacts to state changes. </p>
+<h3>Pipeline</h3>
+<pre> Input ↓ Parser ↓ Resolver ↓ Command ↓ State Update ↓ Event ↓ UI Refresh </pre>
+<hr>
+<h2>Explicit Non-Goals</h2>
+<ul> <li>No AI integration</li> <li>No attachment management</li> <li>No graph visualization</li> <li>No plugin system</li> <li>No embedded editor</li> <li>No canvas system</li> <li>No PDF management</li> <li>No image management</li> <li>No custom task language</li> <li>No query language in v1</li> </ul>
+</body> </html>
