@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 
@@ -97,7 +98,7 @@ func New(v *vault.Vault, idx *index.Index) Model {
 	}
 	m.sidebar = newSidebar(idx, v)
 	m.noteList = newNoteList(v)
-	m.palette = newPalette()
+	m.palette = newPalette(nil)
 
 	// Restore session state
 	sess := loadSession(v)
@@ -157,12 +158,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for i := range m.splits {
 			m.splits[i].viewer = m.splits[i].viewer.preRender(l.paneWidth)
 			if m.splits[i].activeView == viewEdit {
-				contentH := l.contentHeight - editHeaderRows
-				if contentH < 1 {
-					contentH = 1
-				}
+				inputW := max(1, l.paneWidth-editLabelWidth)
+				m.splits[i].editor.tagsInput.Width = inputW
+				m.splits[i].editor.projInput.Width = inputW
 				m.splits[i].editor.ta.SetWidth(l.paneWidth)
-				m.splits[i].editor.ta.SetHeight(contentH)
+				m.splits[i].editor.ta.SetHeight(calcBodyHeight(l.contentHeight))
 			}
 		}
 
@@ -203,6 +203,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if sp.editor.saved {
 					n := sp.editor.note
 					n.Body = sp.editor.ta.Value()
+					n.State = vault.AllStates[sp.editor.stateIdx]
+					n.Tags = parseTags(sp.editor.tagsInput.Value())
+					n.Project = strings.TrimSpace(sp.editor.projInput.Value())
 					if saveErr := m.vault.Save(n); saveErr != nil {
 						m.statusMsg = "save error: " + saveErr.Error()
 					} else {
@@ -251,7 +254,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case ":":
 			m.showPalette = true
-			m.palette = newPalette()
+			m.palette = newPalette(sortedNotes(m.vault))
 			return m, nil
 
 		case "ctrl+p":
@@ -265,7 +268,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "ctrl+s":
 			m.showPalette = true
-			m.palette = newPaletteWithInput("search ")
+			m.palette = newPaletteWithInput("search ", sortedNotes(m.vault))
 			return m, nil
 
 		case "e":
@@ -642,7 +645,7 @@ func (m Model) renderTooltipBar() string {
 
 	// In edit mode show only edit-specific chips.
 	if m.activePane == paneMain && len(m.splits) > 0 && m.splits[m.activeSplit].activeView == viewEdit {
-		chips = append(chips, chip("^S", "save"), chip("Esc", "cancel"), chip("^C", "quit"))
+		chips = append(chips, chip("^S", "save"), chip("Tab", "cycle fields"), chip("Esc", "cancel"), chip("^C", "quit"))
 		bar := strings.Join(chips, " ")
 		return lipgloss.NewStyle().
 			Width(m.width).
@@ -702,4 +705,13 @@ func capitalize(s string) string {
 
 type statusMsg string
 type notesLoadedMsg struct{ notes []*vault.Note }
+
+// sortedNotes returns all vault notes sorted by Updated descending, for palette completion.
+func sortedNotes(v *vault.Vault) []*vault.Note {
+	all, _ := v.ListAll()
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].Updated.After(all[j].Updated)
+	})
+	return all
+}
 type countsRefreshedMsg struct{ counts map[vault.NoteState]int }

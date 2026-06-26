@@ -196,7 +196,7 @@ func TestSplitPaneBackEmpty(t *testing.T) {
 // --- palette DSL input ---
 
 func TestPaletteValue(t *testing.T) {
-	p := newPalette()
+	p := newPalette(nil)
 	p.input = "  new \"Docker\"  "
 	if got := p.value(); got != "new \"Docker\"" {
 		t.Errorf("value() = %q", got)
@@ -205,41 +205,72 @@ func TestPaletteValue(t *testing.T) {
 
 // --- palette completion ---
 
-func TestPaletteFiltered(t *testing.T) {
-	p := newPalette()
+func TestPaletteVerbSuggestions(t *testing.T) {
+	p := newPalette(nil)
 
 	// Empty input → all commands
-	if got := p.filteredSuggestions(); len(got) != len(allCommands) {
-		t.Errorf("empty input: want %d suggestions, got %d", len(allCommands), len(got))
+	if got := p.verbSuggestions(); len(got) != len(allCommands) {
+		t.Errorf("empty input: want %d verb suggestions, got %d", len(allCommands), len(got))
 	}
 
 	// "n" → only "new"
 	p.input = "n"
-	sug := p.filteredSuggestions()
-	if len(sug) != 1 || sug[0].cmd != "new" {
+	sug := p.verbSuggestions()
+	if len(sug) != 1 || sug[0].name != "new" {
 		t.Errorf("input 'n': got %v", sug)
-	}
-
-	// "new " (with space) → locked to "new"
-	p.input = "new "
-	sug = p.filteredSuggestions()
-	if len(sug) != 1 || sug[0].cmd != "new" {
-		t.Errorf("input 'new ': got %v", sug)
 	}
 
 	// "xyz" → no match
 	p.input = "xyz"
-	if got := p.filteredSuggestions(); len(got) != 0 {
+	if got := p.verbSuggestions(); len(got) != 0 {
 		t.Errorf("input 'xyz': expected 0 suggestions, got %d", len(got))
+	}
+
+	// "new " → past verb stage, verbSuggestions still returns all with prefix "" — but isTypingVerb is false
+	p.input = "new "
+	if !(!p.isTypingVerb()) {
+		t.Error("'new ' should not be in verb-typing stage")
+	}
+	def, ok := p.currentCmdDef()
+	if !ok || def.name != "new" {
+		t.Errorf("currentCmdDef for 'new ': got %v, ok=%v", def, ok)
 	}
 }
 
 func TestPaletteTabCompletes(t *testing.T) {
-	p := newPalette()
+	p := newPalette(nil)
 	p.input = "n"
 	p, _ = p.update(key("tab"))
 	if p.input != "new " {
 		t.Errorf("tab completion: got %q, want %q", p.input, "new ")
+	}
+}
+
+func TestPaletteActiveSlot(t *testing.T) {
+	p := newPalette(nil)
+
+	// "open " → slotNote
+	p.input = "open "
+	if got := p.activeSlot(); got != slotNote {
+		t.Errorf("'open ': want slotNote, got %v", got)
+	}
+
+	// "move docker " → still slotNote (no arrow yet)
+	p.input = "move docker "
+	if got := p.activeSlot(); got != slotNote {
+		t.Errorf("'move docker ': want slotNote, got %v", got)
+	}
+
+	// "move docker → " → slotState
+	p.input = "move docker → "
+	if got := p.activeSlot(); got != slotState {
+		t.Errorf("'move docker → ': want slotState, got %v", got)
+	}
+
+	// "theme " → slotTheme
+	p.input = "theme "
+	if got := p.activeSlot(); got != slotTheme {
+		t.Errorf("'theme ': want slotTheme, got %v", got)
 	}
 }
 
