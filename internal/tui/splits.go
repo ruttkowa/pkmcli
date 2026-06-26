@@ -9,6 +9,7 @@ import (
 type splitPane struct {
 	activeView view
 	viewer     viewerModel
+	editor     editPane
 	notes      []*vault.Note // list shown in this pane (when activeView == viewList)
 	history    []*vault.Note // back/forward stack
 	histIdx    int           // current position in history (-1 = empty)

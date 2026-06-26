@@ -16,6 +16,7 @@ type view int
 const (
 	viewList view = iota
 	viewNote
+	viewEdit
 )
 
 type pane int
@@ -151,10 +152,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		// Re-render open notes for the new terminal width.
+		// Re-render open notes and resize active edit panes for the new terminal width.
 		l := m.computeLayout()
 		for i := range m.splits {
 			m.splits[i].viewer = m.splits[i].viewer.preRender(l.paneWidth)
+			if m.splits[i].activeView == viewEdit {
+				contentH := l.contentHeight - editHeaderRows
+				if contentH < 1 {
+					contentH = 1
+				}
+				m.splits[i].editor.ta.SetWidth(l.paneWidth)
+				m.splits[i].editor.ta.SetHeight(contentH)
+			}
 		}
 
 	case tea.MouseMsg:
@@ -178,6 +187,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showPalette = false
 			}
 			return m, tea.Batch(cmds...)
+		}
+
+		// Edit mode captures all input — bypass global shortcuts.
+		if m.activePane == paneMain && len(m.splits) > 0 {
+			sp := &m.splits[m.activeSplit]
+			if sp.activeView == viewEdit {
+				if msg.String() == "ctrl+c" {
+					saveSession(m.vault, &m)
+					return m, tea.Quit
+				}
+				var cmd tea.Cmd
+				sp.editor, cmd = sp.editor.update(msg)
+				cmds = append(cmds, cmd)
+				if sp.editor.saved {
+					n := sp.editor.note
+					n.Body = sp.editor.ta.Value()
+					if saveErr := m.vault.Save(n); saveErr != nil {
+						m.statusMsg = "save error: " + saveErr.Error()
+					} else {
+						m.index.Upsert(n)
+						sp.viewer = sp.viewer.withNote(n)
+						l := m.computeLayout()
+						sp.viewer = sp.viewer.preRender(l.paneWidth)
+						m.statusMsg = "saved: " + n.Title
+					}
+					sp.editor = editPane{}
+					sp.activeView = viewNote
+				} else if sp.editor.cancelled {
+					sp.editor = editPane{}
+					sp.activeView = viewNote
+				}
+				return m, tea.Batch(cmds...)
+			}
 		}
 
 		m.statusMsg = ""
@@ -229,7 +271,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "e":
 			sp := &m.splits[m.activeSplit]
 			if sp.activeView == viewNote && sp.viewer.note != nil {
-				return m, openInEditor(m.vault, sp.viewer.note)
+				l := m.computeLayout()
+				var cmd tea.Cmd
+				sp.editor, cmd = newEditPane(sp.viewer.note, l.paneWidth, l.contentHeight)
+				sp.activeView = viewEdit
+				return m, cmd
 			}
 
 		case "tab":
@@ -313,18 +359,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case editorFinishedMsg:
-		if msg.err != nil {
-			m.statusMsg = "editor error: " + msg.err.Error()
-		} else if msg.note != nil {
-			m.index.Upsert(msg.note)
-			sp := &m.splits[m.activeSplit]
-			sp.viewer = sp.viewer.withNote(msg.note)
-			l := m.computeLayout()
-			sp.viewer = sp.viewer.preRender(l.paneWidth)
-			m.statusMsg = "saved: " + msg.note.Title
-		}
-
 	case statusMsg:
 		m.statusMsg = string(msg)
 
@@ -334,6 +368,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case countsRefreshedMsg:
 		m.sidebar = m.sidebar.withCounts(msg.counts)
+
+	default:
+		// Route unrecognised messages (e.g. cursor-blink ticks) to the active edit pane.
+		if m.activePane == paneMain && len(m.splits) > 0 {
+			sp := &m.splits[m.activeSplit]
+			if sp.activeView == viewEdit {
+				var cmd tea.Cmd
+				sp.editor, cmd = sp.editor.update(msg)
+				cmds = append(cmds, cmd)
+			}
+		}
 	}
 
 	return m, tea.Batch(cmds...)
@@ -509,6 +554,8 @@ func (m Model) renderSplits(l layout) string {
 			content = m.noteList.render(pi, l.contentHeight, focused)
 		case viewNote:
 			content = sp.viewer.render(pi, l.contentHeight, focused)
+		case viewEdit:
+			content = sp.editor.render(pi, l.contentHeight)
 		}
 
 		borderColor := activeTheme.BorderNormal
@@ -587,6 +634,16 @@ func (m Model) renderTooltipBar() string {
 		bar += lipgloss.NewStyle().
 			Foreground(activeTheme.Cursor).
 			Render(strconv.Itoa(m.pickerIdx+1)+"/"+strconv.Itoa(total))
+		return lipgloss.NewStyle().
+			Width(m.width).
+			Background(activeTheme.StatusBg).
+			Render(bar)
+	}
+
+	// In edit mode show only edit-specific chips.
+	if m.activePane == paneMain && len(m.splits) > 0 && m.splits[m.activeSplit].activeView == viewEdit {
+		chips = append(chips, chip("^S", "save"), chip("Esc", "cancel"), chip("^C", "quit"))
+		bar := strings.Join(chips, " ")
 		return lipgloss.NewStyle().
 			Width(m.width).
 			Background(activeTheme.StatusBg).
