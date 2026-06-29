@@ -1,0 +1,4 @@
+theme: dark
+sidebar_width: 20
+restore_session: true
+line_numbers: true

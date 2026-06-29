@@ -13,13 +13,15 @@ import (
 type slotKind int
 
 const (
-	slotNone  slotKind = iota
-	slotNote           // note title, fuzzy-matched from vault
-	slotTitle          // free-text title (new)
-	slotQuery          // free-text search query
-	slotState          // state choice from vault.AllStates
-	slotTheme          // dark|light
-	slotArrow          // gateway "→" — separates slots, not user content
+	slotNone     slotKind = iota
+	slotNote              // note title, fuzzy-matched from vault
+	slotTemplate          // note title, filtered to #template-tagged notes only
+	slotTitle             // free-text title (new)
+	slotQuery             // free-text search query
+	slotState             // state choice from vault.AllStates
+	slotTheme             // dark|light
+	slotArrow             // gateway "→" — separates slots, not user content
+	slotProject           // project name, prefix-matched from active projects
 )
 
 // cmdDef is the authoritative grammar entry for one command.
@@ -33,19 +35,34 @@ type cmdDef struct {
 
 var allCommands = []cmdDef{
 	{
-		name: "new", sig: `"Title"`, desc: "Create note in Inbox",
+		name: "new", sig: `"Title"`, desc: "Create a note in Inbox",
 		example: `:new "Docker Setup"`,
 		slots:   []slotKind{slotTitle},
 	},
 	{
-		name: "open", sig: "<note>", desc: "Open note by title",
-		example: `:open docker`,
-		slots:   []slotKind{slotNote},
+		name: "new project", sig: "<name>", desc: "Create a new project (max 4)",
+		example: `:new project Homelab`,
+		slots:   []slotKind{slotProject},
 	},
 	{
-		name: "search", sig: "<query>  ·  #tag", desc: "Full-text / tag search",
-		example: `:search linux  or  :search #docker`,
-		slots:   []slotKind{slotQuery},
+		name: "new template", sig: `"Title"`, desc: "Create a new template note",
+		example: `:new template "Meeting Notes"`,
+		slots:   []slotKind{slotTitle},
+	},
+	{
+		name: "add project", sig: "<name>", desc: "Assign the open note to a project (moves to Projects)",
+		example: `:add project Homelab`,
+		slots:   []slotKind{slotProject},
+	},
+	{
+		name: "insert", sig: "<template>", desc: "Insert a template into the current note",
+		example: `:insert meeting`,
+		slots:   []slotKind{slotTemplate},
+	},
+	{
+		name: "open", sig: "<note · query · #tag>", desc: "Open by title, search content, or filter by tag",
+		example: `:open docker  or  :open #linux`,
+		slots:   []slotKind{slotNote},
 	},
 	{
 		name: "move", sig: "<note> → <state>", desc: "Promote or demote a note",
@@ -70,9 +87,35 @@ var allCommands = []cmdDef{
 		slots:   []slotKind{},
 	},
 	{
-		name: "theme", sig: "dark · light", desc: "Switch color theme",
-		example: `:theme dark`,
+		name: "theme", sig: "nord · solarized · dracula · gruvbox · tokyonight", desc: "Switch color theme",
+		example: `:theme nord`,
 		slots:   []slotKind{slotTheme},
+	},
+	{
+		name: "config", sig: "theme dark·light", desc: "Open config menu or set a value",
+		example: `:config theme dark`,
+		slots:   []slotKind{slotNone},
+	},
+	{
+		name:    "help",
+		sig:     "",
+		desc:    "Show help (keybindings, commands, workflows)",
+		example: `:help`,
+		slots:   []slotKind{},
+	},
+	{
+		name:    "quit",
+		sig:     "",
+		desc:    "Save session and quit",
+		example: `:quit`,
+		slots:   []slotKind{},
+	},
+	{
+		name:    "exit",
+		sig:     "",
+		desc:    "Save session and quit (alias for :quit)",
+		example: `:exit`,
+		slots:   []slotKind{},
 	},
 }
 
@@ -88,54 +131,55 @@ type ctxSuggestion struct {
 }
 
 type paletteModel struct {
-	input     string
-	selected  int
-	submitted bool
-	cancelled bool
-	notes     []*vault.Note // pre-sorted by Updated desc for note completions
+	input        string
+	selected     int
+	submitted    bool
+	cancelled    bool
+	notes        []*vault.Note // pre-sorted by Updated desc for note completions
+	projectNames []string      // active project names for slotProject autosuggest
 }
 
-func newPalette(notes []*vault.Note) paletteModel {
-	return paletteModel{notes: notes}
+func newPalette(notes []*vault.Note, projectNames []string) paletteModel {
+	return paletteModel{notes: notes, projectNames: projectNames}
 }
 
-func newPaletteWithInput(input string, notes []*vault.Note) paletteModel {
-	return paletteModel{input: input, notes: notes}
+func newPaletteWithInput(input string, notes []*vault.Note, projectNames []string) paletteModel {
+	return paletteModel{input: input, notes: notes, projectNames: projectNames}
 }
 
 func (p paletteModel) value() string { return strings.TrimSpace(p.input) }
 
 // ── DSL analysis ─────────────────────────────────────────────────────────────
 
-// isTypingVerb returns true when no space has been typed yet.
+// isTypingVerb returns true when the input hasn't yet matched a complete command name.
 func (p paletteModel) isTypingVerb() bool {
-	return !strings.Contains(strings.TrimLeft(p.input, " "), " ")
+	_, ok := p.currentCmdDef()
+	return !ok
 }
 
-// inputAfterVerb returns the input text after the verb and its trailing space.
+// inputAfterVerb returns the text after the matched command name and its trailing space.
 func (p paletteModel) inputAfterVerb() string {
 	trimmed := strings.TrimLeft(p.input, " ")
-	idx := strings.Index(trimmed, " ")
-	if idx == -1 {
+	def, ok := p.currentCmdDef()
+	if !ok {
 		return ""
 	}
-	return trimmed[idx+1:]
+	return trimmed[len(def.name)+1:] // strip "<command> "
 }
 
-// currentCmdDef returns the matching command definition for the typed verb.
+// currentCmdDef returns the longest command whose name (plus a space) is a prefix of the input.
+// Longest-match means "new project " wins over "new " for compound commands.
 func (p paletteModel) currentCmdDef() (cmdDef, bool) {
 	trimmed := strings.TrimLeft(p.input, " ")
-	idx := strings.Index(trimmed, " ")
-	if idx == -1 {
-		return cmdDef{}, false
-	}
-	verb := trimmed[:idx]
+	var best cmdDef
+	found := false
 	for _, c := range allCommands {
-		if c.name == verb {
-			return c, true
+		if strings.HasPrefix(trimmed, c.name+" ") && len(c.name) > len(best.name) {
+			best = c
+			found = true
 		}
 	}
-	return cmdDef{}, false
+	return best, found
 }
 
 // activeSlot returns which content slot the user is currently filling.
@@ -213,10 +257,14 @@ func (p paletteModel) contextSuggestions() []ctxSuggestion {
 	switch p.activeSlot() {
 	case slotNote:
 		return p.noteSuggestions(p.currentNoteFragment())
+	case slotTemplate:
+		return p.templateSuggestions(p.currentNoteFragment())
 	case slotState:
 		return p.stateSuggestions(p.currentStateFragment())
 	case slotTheme:
 		return p.themeSuggestions(strings.TrimSpace(p.inputAfterVerb()))
+	case slotProject:
+		return p.projectSuggestions(strings.TrimSpace(p.inputAfterVerb()))
 	}
 	return nil
 }
@@ -227,6 +275,30 @@ func (p paletteModel) noteSuggestions(fragment string) []ctxSuggestion {
 	for _, n := range p.notes {
 		if fl == "" || strings.Contains(strings.ToLower(n.Title), fl) {
 			out = append(out, ctxSuggestion{cmd: n.Title, desc: string(n.State)})
+			if len(out) >= maxContextRows {
+				break
+			}
+		}
+	}
+	return out
+}
+
+func (p paletteModel) templateSuggestions(fragment string) []ctxSuggestion {
+	fl := strings.ToLower(fragment)
+	var out []ctxSuggestion
+	for _, n := range p.notes {
+		hasTag := false
+		for _, tag := range n.Tags {
+			if strings.ToLower(tag) == "template" {
+				hasTag = true
+				break
+			}
+		}
+		if !hasTag {
+			continue
+		}
+		if fl == "" || strings.Contains(strings.ToLower(n.Title), fl) {
+			out = append(out, ctxSuggestion{cmd: n.Title, desc: "template"})
 			if len(out) >= maxContextRows {
 				break
 			}
@@ -257,17 +329,32 @@ func (p paletteModel) stateSuggestions(fragment string) []ctxSuggestion {
 
 func (p paletteModel) themeSuggestions(fragment string) []ctxSuggestion {
 	fl := strings.ToLower(fragment)
-	all := []ctxSuggestion{
-		{cmd: "dark", desc: "dark color theme"},
-		{cmd: "light", desc: "light color theme"},
+	descs := []string{"Nord dark theme", "Solarized Dark theme", "Dracula theme", "Gruvbox Dark theme", "Tokyo Night theme"}
+	var all []ctxSuggestion
+	for i, t := range ThemeChoices {
+		all = append(all, ctxSuggestion{cmd: t.Name, desc: descs[i]})
 	}
 	if fl == "" {
 		return all
 	}
 	var out []ctxSuggestion
-	for _, t := range all {
-		if strings.HasPrefix(t.cmd, fl) {
-			out = append(out, t)
+	for _, s := range all {
+		if strings.HasPrefix(s.cmd, fl) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func (p paletteModel) projectSuggestions(fragment string) []ctxSuggestion {
+	fl := strings.ToLower(fragment)
+	var out []ctxSuggestion
+	for _, name := range p.projectNames {
+		if fl == "" || strings.HasPrefix(strings.ToLower(name), fl) {
+			out = append(out, ctxSuggestion{cmd: name, desc: "active project"})
+			if len(out) >= maxContextRows {
+				break
+			}
 		}
 	}
 	return out
@@ -309,6 +396,10 @@ func (p paletteModel) update(msg tea.KeyMsg) (paletteModel, tea.Cmd) {
 
 	case "esc":
 		p.cancelled = true
+
+	case "ctrl+c":
+		p.input = ""
+		p.selected = 0
 
 	case "tab", "right":
 		p = p.tabComplete()
@@ -389,7 +480,7 @@ func (p paletteModel) tabComplete() paletteModel {
 	}
 
 	switch p.activeSlot() {
-	case slotNote:
+	case slotNote, slotTemplate:
 		p.input = def.name + " " + chosen
 		for _, s := range def.slots {
 			if s == slotArrow {
@@ -399,7 +490,7 @@ func (p paletteModel) tabComplete() paletteModel {
 		}
 	case slotState:
 		p.input = def.name + " " + p.currentNoteFragment() + " → " + chosen
-	case slotTheme:
+	case slotTheme, slotProject:
 		p.input = def.name + " " + chosen
 	}
 	p.selected = 0

@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"pkm/internal/index"
 	"pkm/internal/vault"
@@ -12,13 +13,32 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+func timeNow() time.Time { return time.Now().Truncate(time.Second) }
+
 type view int
 
 const (
 	viewList view = iota
 	viewNote
 	viewEdit
+	viewProjectsOverview
+	viewProjectDetail
+	viewHelp
+	viewSectionLanding
 )
+
+type undoRecord struct {
+	oldNote vault.Note
+	newNote vault.Note
+}
+
+type tickMsg time.Time
+
+func tickCmd() tea.Cmd {
+	return tea.Tick(30*time.Second, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
+}
 
 type pane int
 
@@ -52,10 +72,25 @@ type Model struct {
 	statusMsg  string
 	panePicker bool
 	pickerIdx  int // 0 = sidebar, 1..n = splits[0..n-1]
+
+	pendingMoveNote *vault.Note // note awaiting project assignment before move to projects
+
+	undoStack []undoRecord
+	redoStack []undoRecord
+
+	cfg        AppConfig
+	showConfig bool
+	configView configPane
+
+	titleSet map[string]bool // lowercase note titles → used for link existence checks
 }
 
 func (m Model) computeLayout() layout {
-	sw := m.width / 4
+	swPct := m.cfg.SidebarWidth
+	if swPct <= 0 {
+		swPct = 25
+	}
+	sw := m.width * swPct / 100
 	mw := m.width - sw - 1 // -1 for gap between sidebar and main
 
 	n := len(m.splits)
@@ -98,17 +133,23 @@ func New(v *vault.Vault, idx *index.Index) Model {
 	}
 	m.sidebar = newSidebar(idx, v)
 	m.noteList = newNoteList(v)
-	m.palette = newPalette(nil)
+	m.palette = newPalette(nil, nil)
+	m.titleSet = buildTitleSet(v)
 
-	// Restore session state
-	sess := loadSession(v)
+	// Load config first (theme, sidebar width, etc.).
+	cfg := loadConfig(v)
+	m.cfg = cfg
 
-	switch sess.Theme {
-	case "light":
-		activeTheme = LightTheme
-	default:
-		activeTheme = DarkTheme
+	activeTheme = NordTheme // default if theme name not recognized
+	for _, t := range ThemeChoices {
+		if t.Name == cfg.Theme {
+			activeTheme = t
+			break
+		}
 	}
+
+	// Restore session state.
+	sess := loadSession(v)
 
 	activeState := vault.StateInbox
 	if sess.ActiveState != "" {
@@ -127,8 +168,8 @@ func New(v *vault.Vault, idx *index.Index) Model {
 		m.noteList = m.noteList.withNotes(notes)
 	}
 
-	// Restore last open note.
-	if sess.LastNoteID != "" {
+	// Restore last open note (skip if restore_session is off).
+	if cfg.RestoreSession && sess.LastNoteID != "" {
 		if notes, err := v.ListAll(); err == nil {
 			for _, n := range notes {
 				if n.ID == sess.LastNoteID {
@@ -143,7 +184,7 @@ func New(v *vault.Vault, idx *index.Index) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return m.sidebar.init()
+	return tea.Batch(m.sidebar.init(), tickCmd())
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -156,13 +197,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Re-render open notes and resize active edit panes for the new terminal width.
 		l := m.computeLayout()
 		for i := range m.splits {
-			m.splits[i].viewer = m.splits[i].viewer.preRender(l.paneWidth)
+			m.splits[i].viewer = m.splits[i].viewer.preRender(l.paneWidth, m.titleSet)
 			if m.splits[i].activeView == viewEdit {
 				inputW := max(1, l.paneWidth-editLabelWidth)
 				m.splits[i].editor.tagsInput.Width = inputW
 				m.splits[i].editor.projInput.Width = inputW
 				m.splits[i].editor.ta.SetWidth(l.paneWidth)
-				m.splits[i].editor.ta.SetHeight(calcBodyHeight(l.contentHeight))
+				m.splits[i].editor.contentHeight = l.contentHeight
+				m.splits[i].editor.ta.SetHeight(m.splits[i].editor.bodyHeight())
 			}
 		}
 
@@ -172,6 +214,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		if msg.String() == "ctrl+c" {
+			msg = tea.KeyMsg{Type: tea.KeyEsc}
+		}
 		if m.showPalette {
 			var cmd tea.Cmd
 			m.palette, cmd = m.palette.update(msg)
@@ -193,15 +238,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.activePane == paneMain && len(m.splits) > 0 {
 			sp := &m.splits[m.activeSplit]
 			if sp.activeView == viewEdit {
-				if msg.String() == "ctrl+c" {
-					saveSession(m.vault, &m)
-					return m, tea.Quit
-				}
 				var cmd tea.Cmd
 				sp.editor, cmd = sp.editor.update(msg)
 				cmds = append(cmds, cmd)
 				if sp.editor.saved {
 					n := sp.editor.note
+					oldNote := *n // snapshot before mutation
 					n.Body = sp.editor.ta.Value()
 					n.State = vault.AllStates[sp.editor.stateIdx]
 					n.Tags = parseTags(sp.editor.tagsInput.Value())
@@ -209,10 +251,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if saveErr := m.vault.Save(n); saveErr != nil {
 						m.statusMsg = "save error: " + saveErr.Error()
 					} else {
+						rec := undoRecord{oldNote: oldNote, newNote: *n}
+						m.undoStack = append(m.undoStack, rec)
+						if len(m.undoStack) > 20 {
+							m.undoStack = m.undoStack[1:]
+						}
+						m.redoStack = nil
 						m.index.Upsert(n)
 						sp.viewer = sp.viewer.withNote(n)
 						l := m.computeLayout()
-						sp.viewer = sp.viewer.preRender(l.paneWidth)
+						sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
 						m.statusMsg = "saved: " + n.Title
 					}
 					sp.editor = editPane{}
@@ -223,6 +271,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, tea.Batch(cmds...)
 			}
+		}
+
+		// Config overlay captures all input.
+		if m.showConfig {
+			switch msg.String() {
+			case "esc":
+				m.showConfig = false
+				saveConfig(m.vault, m.cfg)
+				// Treat config-close like a resize: rerender all viewers at
+				// potentially new layout (sidebar width) and theme.
+				l := m.computeLayout()
+				for i := range m.splits {
+					m.splits[i].viewer = m.splits[i].viewer.preRender(l.paneWidth, m.titleSet)
+					if m.splits[i].activeView == viewEdit {
+						inputW := max(1, l.paneWidth-editLabelWidth)
+						m.splits[i].editor.tagsInput.Width = inputW
+						m.splits[i].editor.projInput.Width = inputW
+						m.splits[i].editor.ta.SetWidth(l.paneWidth)
+						m.splits[i].editor.contentHeight = l.contentHeight
+						m.splits[i].editor.ta.SetHeight(m.splits[i].editor.bodyHeight())
+					}
+				}
+			case "j", "down":
+				m.configView = m.configView.moveCursor(1)
+			case "k", "up":
+				m.configView = m.configView.moveCursor(-1)
+			case "left", "h":
+				m.configView = m.configView.changeValue(-1)
+				m.applyConfigItem(m.configView.cursor, m.configView.values[m.configView.cursor])
+			case "right", "l", "enter":
+				m.configView = m.configView.changeValue(1)
+				m.applyConfigItem(m.configView.cursor, m.configView.values[m.configView.cursor])
+			}
+			return m, nil
 		}
 
 		m.statusMsg = ""
@@ -248,13 +330,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "ctrl+c", "q":
+		case "ctrl+q", "ctrl+d":
 			saveSession(m.vault, &m)
 			return m, tea.Quit
 
+		case "ctrl+z":
+			m.handleUndo()
+			return m, nil
+
+		case "ctrl+y":
+			m.handleRedo()
+			return m, nil
+
 		case ":":
 			m.showPalette = true
-			m.palette = newPalette(sortedNotes(m.vault))
+			m.palette = newPalette(sortedNotes(m.vault), m.vault.Projects.ActiveNames())
 			return m, nil
 
 		case "ctrl+p":
@@ -266,9 +356,53 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 
-		case "ctrl+s":
+		case "?":
+			sp := &m.splits[m.activeSplit]
+			if sp.activeView == viewHelp {
+				sp.activeView = viewList
+			} else {
+				sp.activeView = viewHelp
+				sp.helpScrollOff = 0
+			}
+			m.activePane = paneMain
+			return m, nil
+
+		case "N":
 			m.showPalette = true
-			m.palette = newPaletteWithInput("search ", sortedNotes(m.vault))
+			m.palette = newPaletteWithInput("new ", sortedNotes(m.vault), m.vault.Projects.ActiveNames())
+			return m, nil
+
+		case "O", "S":
+			m.showPalette = true
+			m.palette = newPaletteWithInput("open ", sortedNotes(m.vault), m.vault.Projects.ActiveNames())
+			return m, nil
+
+		case "A":
+			m.showPalette = true
+			input := "archive "
+			if n := m.splits[m.activeSplit].viewer.note; m.splits[m.activeSplit].activeView == viewNote && n != nil {
+				input += n.Title
+			}
+			m.palette = newPaletteWithInput(input, sortedNotes(m.vault), m.vault.Projects.ActiveNames())
+			return m, nil
+
+		case "M":
+			m.showPalette = true
+			input := "move "
+			if n := m.splits[m.activeSplit].viewer.note; m.splits[m.activeSplit].activeView == viewNote && n != nil {
+				input += n.Title + " → "
+			}
+			m.palette = newPaletteWithInput(input, sortedNotes(m.vault), m.vault.Projects.ActiveNames())
+			return m, nil
+
+		case "T":
+			m.showPalette = true
+			m.palette = newPaletteWithInput("insert ", sortedNotes(m.vault), m.vault.Projects.ActiveNames())
+			return m, nil
+
+		case "P":
+			m.showPalette = true
+			m.palette = newPaletteWithInput("add project ", sortedNotes(m.vault), m.vault.Projects.ActiveNames())
 			return m, nil
 
 		case "e":
@@ -276,7 +410,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if sp.activeView == viewNote && sp.viewer.note != nil {
 				l := m.computeLayout()
 				var cmd tea.Cmd
-				sp.editor, cmd = newEditPane(sp.viewer.note, l.paneWidth, l.contentHeight)
+				sp.editor, cmd = newEditPane(sp.viewer.note, l.paneWidth, l.contentHeight, sortedNotes(m.vault), m.cfg.LineNumbers)
 				sp.activeView = viewEdit
 				return m, cmd
 			}
@@ -294,11 +428,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.activePane = paneMain
 			}
 
-		case "[", "alt+left":
-			m.splits[m.activeSplit].back()
-
-		case "]", "alt+right":
-			m.splits[m.activeSplit].forward()
 		}
 
 		if m.activePane == paneSidebar {
@@ -313,13 +442,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.sidebar.selectedNote = nil
 					m.splits[m.activeSplit].openNote(n)
 					l := m.computeLayout()
-					m.splits[m.activeSplit].viewer = m.splits[m.activeSplit].viewer.preRender(l.paneWidth)
+					m.splits[m.activeSplit].viewer = m.splits[m.activeSplit].viewer.preRender(l.paneWidth, m.titleSet)
+					m.activePane = paneMain
+				} else if m.sidebar.selectedProject != nil {
+					// Project entry chosen: open project detail view.
+					p := m.sidebar.selectedProject
+					m.sidebar.selectedProject = nil
+					notes, _ := m.vault.ListAll()
+					var pNotes []*vault.Note
+					for _, n := range notes {
+						if n.Project == p.Name && n.State == vault.StateProjects {
+							pNotes = append(pNotes, n)
+						}
+					}
+					m.splits[m.activeSplit].projectDetail = newProjectDetailPane(p, pNotes)
+					m.splits[m.activeSplit].activeView = viewProjectDetail
 					m.activePane = paneMain
 				} else {
-					// Section expanded/collapsed: reload note list, stay in sidebar.
-					if notes, err := m.vault.ListByState(m.sidebar.activeState); err == nil {
-						m.noteList = m.noteList.withNotes(notes)
-					}
+					// Section header selected: show landing page; keep focus in sidebar
+					// so the user can navigate notes below and open them with Enter.
+					m.showSectionLanding(m.sidebar.activeState, m.sidebar.templatesActive)
 				}
 			}
 		} else {
@@ -332,18 +474,86 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.noteList.chosen != nil {
 					sp.openNote(m.noteList.chosen)
 					l := m.computeLayout()
-					sp.viewer = sp.viewer.preRender(l.paneWidth)
+					sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
 					m.noteList.chosen = nil
 				}
 			case viewNote:
-				var cmd tea.Cmd
-				sp.viewer, cmd = sp.viewer.update(msg)
-				cmds = append(cmds, cmd)
-				if sp.viewer.back {
-					sp.viewer.back = false
-					if !sp.back() {
-						sp.activeView = viewList
+				switch msg.String() {
+				case "[", "alt+left":
+					if sp.back() {
+						l := m.computeLayout()
+						sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
 					}
+				case "]", "alt+right":
+					if sp.forward() {
+						l := m.computeLayout()
+						sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+					}
+				default:
+					var cmd tea.Cmd
+					sp.viewer, cmd = sp.viewer.update(msg)
+					cmds = append(cmds, cmd)
+					if sp.viewer.back {
+						sp.viewer.back = false
+						if !sp.back() {
+							sp.activeView = viewList
+						} else {
+							l := m.computeLayout()
+							sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+						}
+					}
+				}
+			case viewProjectDetail:
+				pd := sp.projectDetail.update(msg)
+				if pd.bridgeDone {
+					p := pd.project
+					_ = m.vault.Projects.AddHistory(p.Name, vault.HistoryEntry{
+						Timestamp: timeNow(),
+						Kind:      vault.HistoryKindNote,
+						Message:   pd.bridgeMessage,
+					})
+					pd.bridgeDone = false
+					pd.bridgeMessage = ""
+					// Reload project to pick up updated history.
+					if updated, ok := m.vault.Projects.Get(p.Name); ok {
+						pd.project = updated
+					}
+				}
+				sp.projectDetail = pd
+			case viewProjectsOverview:
+				if msg.String() == "esc" || msg.String() == "backspace" {
+					sp.activeView = viewList
+				}
+			case viewSectionLanding:
+				if msg.String() == "esc" || msg.String() == "backspace" {
+					sp.activeView = viewList
+				}
+			case viewHelp:
+				switch msg.String() {
+				case "esc", "backspace", "?":
+					sp.activeView = viewList
+				case "j", "down":
+					l := m.computeLayout()
+					maxOff := HelpTotalLines() - l.contentHeight
+					if maxOff < 0 {
+						maxOff = 0
+					}
+					if sp.helpScrollOff < maxOff {
+						sp.helpScrollOff++
+					}
+				case "k", "up":
+					if sp.helpScrollOff > 0 {
+						sp.helpScrollOff--
+					}
+				case "g":
+					sp.helpScrollOff = 0
+				case "G":
+					l := m.computeLayout()
+					maxOff := HelpTotalLines() - l.contentHeight
+					if maxOff < 0 {
+						maxOff = 0
+					}
+					sp.helpScrollOff = maxOff
 				}
 			}
 		}
@@ -357,7 +567,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for i := range m.splits {
 				if m.splits[i].viewer.note != nil && m.splits[i].viewer.note.ID == msg.note.ID {
 					m.splits[i].viewer = m.splits[i].viewer.withNote(msg.note)
-					m.splits[i].viewer = m.splits[i].viewer.preRender(l.paneWidth)
+					m.splits[i].viewer = m.splits[i].viewer.preRender(l.paneWidth, m.titleSet)
 				}
 			}
 		}
@@ -371,6 +581,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case countsRefreshedMsg:
 		m.sidebar = m.sidebar.withCounts(msg.counts)
+		m.sidebar.templateCount = msg.templateCount
+
+	case tickMsg:
+		// Clock tick: re-render so the breadcrumb time stays current.
+		return m, tickCmd()
 
 	default:
 		// Route unrecognised messages (e.g. cursor-blink ticks) to the active edit pane.
@@ -385,6 +600,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, tea.Batch(cmds...)
+}
+
+func (m *Model) applyConfigItem(itemIdx, valueIdx int) {
+	switch itemIdx {
+	case cfgItemTheme:
+		if valueIdx >= 0 && valueIdx < len(ThemeChoices) {
+			activeTheme = ThemeChoices[valueIdx]
+			m.cfg.Theme = activeTheme.Name
+			m.bustViewerCaches()
+		}
+	case cfgItemSidebarWidth:
+		widths := []int{20, 25, 33}
+		if valueIdx >= 0 && valueIdx < len(widths) {
+			m.cfg.SidebarWidth = widths[valueIdx]
+		}
+		m.bustViewerCaches() // cached render is now the wrong width
+	case cfgItemRestoreSession:
+		m.cfg.RestoreSession = valueIdx == 0
+	case cfgItemLineNumbers:
+		m.cfg.LineNumbers = valueIdx == 0
+	}
+}
+
+func (m *Model) bustViewerCaches() {
+	for i := range m.splits {
+		m.splits[i].viewer.rendered = ""
+		m.splits[i].viewer.renderWidth = 0
+	}
 }
 
 func (m *Model) applyPickerSelection() {
@@ -416,29 +659,78 @@ func (m *Model) handleMouseClick(x, y int) {
 		m.activePane = paneSidebar
 
 		if item.isSection {
-			// Toggle expand/collapse.
-			if m.sidebar.expanded[item.state] {
-				m.sidebar.expanded[item.state] = false
-				// Clamp cursor if it was on a note that just disappeared.
+			if item.isTemplates {
+				if m.sidebar.templatesExpanded {
+					m.sidebar.templatesExpanded = false
+					newItems := m.sidebar.items()
+					if m.sidebar.cursor >= len(newItems) {
+						m.sidebar.cursor = len(newItems) - 1
+					}
+				} else {
+					m.sidebar.templatesExpanded = true
+					notes, _ := m.vault.ListByTag("template")
+					m.sidebar.templateNotes = notes
+					m.sidebar.templateCount = len(notes)
+				}
+				m.sidebar.templatesActive = true
+			} else {
+				if m.sidebar.expanded[item.state] {
+					m.sidebar.expanded[item.state] = false
+					newItems := m.sidebar.items()
+					if m.sidebar.cursor >= len(newItems) {
+						m.sidebar.cursor = len(newItems) - 1
+					}
+				} else {
+					m.sidebar.expanded[item.state] = true
+					if item.state != vault.StateProjects {
+						notes, _ := m.vault.ListByState(item.state)
+						m.sidebar.notesByState[item.state] = notes
+					}
+				}
+				m.sidebar.activeState = item.state
+				m.sidebar.templatesActive = false
+				m.sidebar.projectsActive = item.state == vault.StateProjects
+			}
+			m.showSectionLanding(m.sidebar.activeState, m.sidebar.templatesActive)
+		} else if item.isProjectEntry {
+			if m.sidebar.expandedProjects[item.project.Name] {
+				m.sidebar.expandedProjects[item.project.Name] = false
 				newItems := m.sidebar.items()
 				if m.sidebar.cursor >= len(newItems) {
 					m.sidebar.cursor = len(newItems) - 1
 				}
 			} else {
-				m.sidebar.expanded[item.state] = true
-				notes, _ := m.vault.ListByState(item.state)
-				m.sidebar.notesByState[item.state] = notes
+				m.sidebar.expandedProjects[item.project.Name] = true
+				allNotes, _ := m.vault.ListAll()
+				var pNotes []*vault.Note
+				for _, n := range allNotes {
+					if n.Project == item.project.Name && n.State == vault.StateProjects {
+						pNotes = append(pNotes, n)
+					}
+				}
+				m.sidebar.projectNotesByName[item.project.Name] = pNotes
 			}
-			m.sidebar.activeState = item.state
-			if notes, err := m.vault.ListByState(item.state); err == nil {
-				m.noteList = m.noteList.withNotes(notes)
+			m.sidebar.activeProjectName = item.project.Name
+			m.sidebar.projectsActive = true
+			m.sidebar.templatesActive = false
+			allNotes, _ := m.vault.ListAll()
+			var pNotes []*vault.Note
+			for _, n := range allNotes {
+				if n.Project == item.project.Name && n.State == vault.StateProjects {
+					pNotes = append(pNotes, n)
+				}
 			}
-		} else {
-			// Click on note title: open directly.
-			m.splits[m.activeSplit].openNote(item.note)
-			l := m.computeLayout()
-			m.splits[m.activeSplit].viewer = m.splits[m.activeSplit].viewer.preRender(l.paneWidth)
+			m.splits[m.activeSplit].projectDetail = newProjectDetailPane(item.project, pNotes)
+			m.splits[m.activeSplit].activeView = viewProjectDetail
 			m.activePane = paneMain
+		} else {
+			// Click on note (regular or project note): open directly.
+			if item.note != nil {
+				m.splits[m.activeSplit].openNote(item.note)
+				l := m.computeLayout()
+				m.splits[m.activeSplit].viewer = m.splits[m.activeSplit].viewer.preRender(l.paneWidth, m.titleSet)
+				m.activePane = paneMain
+			}
 		}
 		return
 	}
@@ -463,10 +755,42 @@ func (m *Model) handleMouseClick(x, y int) {
 				m.noteList.cursor = noteIdx
 				sp.openNote(m.noteList.notes[noteIdx])
 				l := m.computeLayout()
-				sp.viewer = sp.viewer.preRender(l.paneWidth)
+				sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+			}
+		} else if sp.activeView == viewNote {
+			// y offsets: breadcrumb(0), top-border(1), content starts at y=2.
+			// The sticky header occupies the first headerLineCount rows of content,
+			// so subtract those to get a body-relative line index.
+			contentRow := y - 2
+			// +1 for the fold separator line drawn below the header.
+			if contentRow <= sp.viewer.headerLineCount {
+				return // click is in the sticky header or fold separator, no links there
+			}
+			bodyLine := (contentRow - sp.viewer.headerLineCount - 1) + sp.viewer.scrollOff
+			if target := sp.viewer.linkAtLine(bodyLine); target != "" {
+				m.openOrCreateNote(target)
 			}
 		}
 	}
+}
+
+// openOrCreateNote navigates to the named note, creating it if it doesn't exist.
+func (m *Model) openOrCreateNote(title string) {
+	n, err := m.vault.FindByTitle(title)
+	if err != nil {
+		n, err = m.vault.Create(title)
+		if err != nil {
+			m.statusMsg = "error: " + err.Error()
+			return
+		}
+		m.index.Upsert(n)
+		m.titleSet[strings.ToLower(n.Title)] = true
+	}
+	sp := &m.splits[m.activeSplit]
+	sp.openNote(n)
+	l := m.computeLayout()
+	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+	m.activePane = paneMain
 }
 
 func (m Model) View() string {
@@ -482,7 +806,11 @@ func (m Model) View() string {
 		sbInner = 1
 	}
 
-	sbContent := m.sidebar.render(sbInner, l.contentHeight, sidebarFocused)
+	activeNoteID := ""
+	if len(m.splits) > 0 && m.splits[m.activeSplit].viewer.note != nil {
+		activeNoteID = m.splits[m.activeSplit].viewer.note.ID
+	}
+	sbContent := m.sidebar.render(sbInner, l.contentHeight, sidebarFocused, activeNoteID)
 
 	sbBorderColor := activeTheme.BorderNormal
 	if m.panePicker && m.pickerIdx == 0 {
@@ -498,7 +826,21 @@ func (m Model) View() string {
 		Height(l.contentHeight).
 		Render(sbContent)
 
-	main := m.renderSplits(l)
+	var main string
+	if m.showConfig {
+		configInner := l.mainWidth - 2
+		if configInner < 1 {
+			configInner = 1
+		}
+		main = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(activeTheme.BorderFocus).
+			Width(configInner).
+			Height(l.contentHeight).
+			Render(m.configView.render(configInner, l.contentHeight))
+	} else {
+		main = m.renderSplits(l)
+	}
 
 	// 1-char gap between sidebar and main; height must match bordered pane height
 	outerH := l.contentHeight + 2
@@ -559,6 +901,14 @@ func (m Model) renderSplits(l layout) string {
 			content = sp.viewer.render(pi, l.contentHeight, focused)
 		case viewEdit:
 			content = sp.editor.render(pi, l.contentHeight)
+		case viewProjectsOverview:
+			content = renderProjectsOverview(sp.allProjects, sp.notes, pi, l.contentHeight)
+		case viewProjectDetail:
+			content = sp.projectDetail.render(pi, l.contentHeight)
+		case viewHelp:
+			content = renderHelpView(pi, l.contentHeight, sp.helpScrollOff)
+		case viewSectionLanding:
+			content = sp.sectionLanding.render(pi, l.contentHeight)
 		}
 
 		borderColor := activeTheme.BorderNormal
@@ -589,10 +939,29 @@ func (m Model) renderBreadcrumb() string {
 	sp := m.splits[m.activeSplit]
 
 	title := " PKM"
-	if sp.activeView == viewNote && sp.viewer.note != nil {
-		title += "  ›  " + sp.viewer.note.Title
-	} else if m.sidebar.activeState != "" {
-		title += "  ›  " + capitalize(string(m.sidebar.activeState))
+	switch sp.activeView {
+	case viewNote:
+		if sp.viewer.note != nil {
+			title += "  ›  " + sp.viewer.note.Title
+		}
+	case viewProjectDetail:
+		if sp.projectDetail.project != nil {
+			title += "  ›  Projects  ›  " + sp.projectDetail.project.Name
+		}
+	case viewProjectsOverview:
+		title += "  ›  Projects"
+	case viewHelp:
+		title += "  ›  Help"
+	case viewSectionLanding:
+		if sp.sectionLanding.isTemplates {
+			title += "  ›  #templates"
+		} else {
+			title += "  ›  " + capitalize(string(sp.sectionLanding.state))
+		}
+	default:
+		if m.sidebar.activeState != "" {
+			title += "  ›  " + capitalize(string(m.sidebar.activeState))
+		}
 	}
 
 	paneTag := ""
@@ -600,12 +969,22 @@ func (m Model) renderBreadcrumb() string {
 		paneTag = " [" + strconv.Itoa(m.activeSplit+1) + "/" + strconv.Itoa(len(m.splits)) + "]"
 	}
 
+	now := time.Now()
+	dateStr := now.Format("Mon 02/01/2006 15:04") + " "
+
+	left := title + paneTag
+	pad := m.width - len([]rune(left)) - len([]rune(dateStr))
+	if pad < 1 {
+		pad = 1
+	}
+	content := left + strings.Repeat(" ", pad) + dateStr
+
 	return lipgloss.NewStyle().
 		Width(m.width).
 		Background(activeTheme.Accent).
 		Foreground(activeTheme.AccentFg).
 		Bold(true).
-		Render(title + paneTag)
+		Render(content)
 }
 
 func (m Model) renderTooltipBar() string {
@@ -616,6 +995,9 @@ func (m Model) renderTooltipBar() string {
 			Bold(true).
 			Padding(0, 1).
 			Render(key)
+		if action == "" {
+			return k
+		}
 		a := lipgloss.NewStyle().
 			Background(activeTheme.BlurredBg).
 			Foreground(activeTheme.TextPrimary).
@@ -624,76 +1006,152 @@ func (m Model) renderTooltipBar() string {
 		return k + a
 	}
 
-	var chips []string
+	withStatus := func(bar string) string {
+		if m.statusMsg != "" {
+			bar += lipgloss.NewStyle().Foreground(activeTheme.Cursor).Render("  " + m.statusMsg)
+		}
+		return lipgloss.NewStyle().Width(m.width).Background(activeTheme.StatusBg).Render(bar)
+	}
 
+	// Config overlay: show config-specific hints.
+	if m.showConfig {
+		bar := strings.Join([]string{chip("↑↓", "select"), chip("←→", "change"), chip("Esc", "save & close")}, " ")
+		return lipgloss.NewStyle().Width(m.width).Background(activeTheme.StatusBg).Render(bar)
+	}
+
+	// Pane picker mode.
 	if m.panePicker {
-		total := len(m.splits) + 1 // sidebar + splits
-		chips = append(chips,
-			chip("←/→", "select pane"),
-			chip("↵", "confirm"),
-			chip("Esc", "cancel"),
-		)
-		bar := strings.Join(chips, " ")
-		bar += lipgloss.NewStyle().
-			Foreground(activeTheme.Cursor).
-			Render(strconv.Itoa(m.pickerIdx+1)+"/"+strconv.Itoa(total))
-		return lipgloss.NewStyle().
-			Width(m.width).
-			Background(activeTheme.StatusBg).
-			Render(bar)
+		total := len(m.splits) + 1
+		bar := strings.Join([]string{chip("←/→", "select pane"), chip("↵", "confirm"), chip("Esc", "cancel")}, " ")
+		bar += lipgloss.NewStyle().Foreground(activeTheme.Cursor).
+			Render(strconv.Itoa(m.pickerIdx+1) + "/" + strconv.Itoa(total))
+		return lipgloss.NewStyle().Width(m.width).Background(activeTheme.StatusBg).Render(bar)
 	}
 
-	// In edit mode show only edit-specific chips.
+	// Help view: show scroll and close hints only.
+	if m.activePane == paneMain && len(m.splits) > 0 && m.splits[m.activeSplit].activeView == viewHelp {
+		bar := strings.Join([]string{chip("j/k", "scroll"), chip("g/G", "top/bottom"), chip("Esc", "close help")}, " ")
+		return lipgloss.NewStyle().Width(m.width).Background(activeTheme.StatusBg).Render(bar)
+	}
+
+	// Edit mode: show edit-specific hints.
 	if m.activePane == paneMain && len(m.splits) > 0 && m.splits[m.activeSplit].activeView == viewEdit {
-		chips = append(chips, chip("^S", "save"), chip("Tab", "cycle fields"), chip("Esc", "cancel"), chip("^C", "quit"))
-		bar := strings.Join(chips, " ")
+		bar := strings.Join([]string{chip("^S", "save"), chip("Tab", "cycle fields"), chip("Esc", "cancel"), chip("^C", "quit")}, " ")
+		return lipgloss.NewStyle().Width(m.width).Background(activeTheme.StatusBg).Render(bar)
+	}
+
+	// Group label style for SHIFT+ / CTRL+ prefixes.
+	grp := func(s string) string {
 		return lipgloss.NewStyle().
-			Width(m.width).
-			Background(activeTheme.StatusBg).
-			Render(bar)
+			Foreground(activeTheme.TextMuted).
+			Render(s)
 	}
 
-	chips = append(chips, chip(":", "command"), chip("q", "quit"), chip("^P", "panes"), chip("^S", "search"))
+	shiftChips := strings.Join([]string{
+		chip("N", "new"),
+		chip("A", "archive"),
+		chip("M", "move"),
+		chip("O", "open"),
+		chip("T", "insert"),
+		chip("P", "add project"),
+	}, " ")
 
-	if m.activePane == paneSidebar {
-		chips = append(chips,
-			chip("↑↓", "navigate"),
-			chip("←→", "collapse/expand"),
-			chip("↵", "select"),
-			chip("Tab", "→ panes"),
-		)
+	ctrlParts := []string{chip("P", "panes"), chip("Q", "quit")}
+	if len(m.splits) > 1 {
+		ctrlParts = append(ctrlParts, chip("W", "next pane"))
+	}
+	if len(m.undoStack) > 0 {
+		ctrlParts = append(ctrlParts, chip("Z", "undo"))
+	}
+	if len(m.redoStack) > 0 {
+		ctrlParts = append(ctrlParts, chip("Y", "redo"))
+	}
+	ctrlChips := strings.Join(ctrlParts, " ")
+
+	bar := chip(":", "command") + "  " + chip("?", "help") + "   " +
+		grp("SHIFT +") + " " + shiftChips + "   " +
+		grp("CTRL +") + " " + ctrlChips
+	return withStatus(bar)
+}
+
+func (m *Model) showSectionLanding(state vault.NoteState, isTemplates bool) {
+	if state == vault.StateProjects && !isTemplates {
+		allNotes, _ := m.vault.ListAll()
+		m.splits[m.activeSplit].allProjects = m.vault.Projects.ListActive()
+		m.splits[m.activeSplit].notes = allNotes
+		m.splits[m.activeSplit].activeView = viewProjectsOverview
 	} else {
-		chips = append(chips, chip("Tab", "sidebar"))
-		sp := m.splits[m.activeSplit]
-		if sp.activeView == viewList {
-			chips = append(chips,
-				chip("↑↓ j k", "navigate"),
-				chip("↵", "open note"),
-			)
+		var notes []*vault.Note
+		if isTemplates {
+			notes, _ = m.vault.ListByTag("template")
 		} else {
-			chips = append(chips,
-				chip("↑↓ j k", "scroll"),
-				chip("e", "edit"),
-				chip("[/]", "history"),
-				chip("Esc", "back"),
-			)
+			notes, _ = m.vault.ListByState(state)
 		}
-		if len(m.splits) > 1 {
-			chips = append(chips, chip("^W", "next pane"))
+		m.splits[m.activeSplit].sectionLanding = sectionLandingPane{
+			state:       state,
+			isTemplates: isTemplates,
+			notes:       notes,
+			count:       len(notes),
+		}
+		m.splits[m.activeSplit].activeView = viewSectionLanding
+	}
+}
+
+func (m *Model) handleUndo() {
+	if len(m.undoStack) == 0 {
+		m.statusMsg = "nothing to undo"
+		return
+	}
+	rec := m.undoStack[len(m.undoStack)-1]
+	m.undoStack = m.undoStack[:len(m.undoStack)-1]
+	old := rec.oldNote
+	if err := m.vault.Save(&old); err != nil {
+		m.statusMsg = "undo error: " + err.Error()
+		return
+	}
+	m.index.Upsert(&old)
+	l := m.computeLayout()
+	for i := range m.splits {
+		if m.splits[i].viewer.note != nil && m.splits[i].viewer.note.ID == old.ID {
+			m.splits[i].viewer = m.splits[i].viewer.withNote(&old)
+			m.splits[i].viewer = m.splits[i].viewer.preRender(l.paneWidth, m.titleSet)
 		}
 	}
+	m.redoStack = append(m.redoStack, rec)
+	m.statusMsg = "undone"
+}
 
-	bar := strings.Join(chips, " ")
-	if m.statusMsg != "" {
-		bar += lipgloss.NewStyle().
-			Foreground(activeTheme.Cursor).
-			Render("  " + m.statusMsg)
+func (m *Model) handleRedo() {
+	if len(m.redoStack) == 0 {
+		m.statusMsg = "nothing to redo"
+		return
 	}
+	rec := m.redoStack[len(m.redoStack)-1]
+	m.redoStack = m.redoStack[:len(m.redoStack)-1]
+	next := rec.newNote
+	if err := m.vault.Save(&next); err != nil {
+		m.statusMsg = "redo error: " + err.Error()
+		return
+	}
+	m.index.Upsert(&next)
+	l := m.computeLayout()
+	for i := range m.splits {
+		if m.splits[i].viewer.note != nil && m.splits[i].viewer.note.ID == next.ID {
+			m.splits[i].viewer = m.splits[i].viewer.withNote(&next)
+			m.splits[i].viewer = m.splits[i].viewer.preRender(l.paneWidth, m.titleSet)
+		}
+	}
+	m.undoStack = append(m.undoStack, rec)
+	m.statusMsg = "redone"
+}
 
-	return lipgloss.NewStyle().
-		Width(m.width).
-		Background(activeTheme.StatusBg).
-		Render(bar)
+func buildTitleSet(v *vault.Vault) map[string]bool {
+	all, _ := v.ListAll()
+	set := make(map[string]bool, len(all))
+	for _, n := range all {
+		set[strings.ToLower(n.Title)] = true
+	}
+	return set
 }
 
 func capitalize(s string) string {
@@ -714,4 +1172,7 @@ func sortedNotes(v *vault.Vault) []*vault.Note {
 	})
 	return all
 }
-type countsRefreshedMsg struct{ counts map[vault.NoteState]int }
+type countsRefreshedMsg struct {
+	counts        map[vault.NoteState]int
+	templateCount int
+}

@@ -1,106 +1,254 @@
 # pkm
 
-A local-first Personal Knowledge Management TUI — a navigation, organization, and knowledge management layer built around Markdown files. Not an editor; editing is delegated to your `$EDITOR`.
+A terminal-based Personal Knowledge Management tool — navigate, organize, and search your Markdown notes without leaving the keyboard.
 
-Inspired by Neovim, Zellij, LazyGit, and Obsidian.
+- **Local-first** — plain `.md` files, no lock-in
+- **Keyboard-first** — everything reachable without a mouse
+- **Not an editor** — writing delegates to your preferred external editor (nvim, vim, helix, …)
+- **No AI, no sync, no cloud**
 
 ---
 
-## Build
-
-Requires Go 1.26+ (install via `mise install go`).
+## Quick start
 
 ```sh
 go build -o pkm ./cmd/pkm
+./pkm [path/to/vault]
 ```
 
-## Run
+On first run the vault directory is created automatically. Omit the path to be prompted.
 
-```sh
-./pkm [vault-path]
-```
+---
 
-`vault-path` defaults to `.`. If no argument is given, pkm prompts for a path before launching. On first run, the directory is initialized with the required structure:
+## Layout
 
 ```
-vault/
-├── notes/        ← all Markdown notes live here
-├── templates/    ← optional note templates
-└── .pkm/
-    ├── config.toml
-    ├── index.db  ← SQLite full-text + tag + link index
-    └── session.yaml
+┌─ PKM  ›  Inbox ──────────────────────────────────────────────────────┐
+│                                                                       │
+│  Sidebar 25%          │  Main pane 75%                               │
+│                       │                                               │
+│  SECTIONS             │  Note viewer / list / project detail         │
+│  ▼ Inbox (3)          │                                               │
+│    · Docker Setup     │                                               │
+│    · Meeting Notes    │                                               │
+│  ▶ Projects (2)       │                                               │
+│    ▼ Homelab (1)      │                                               │
+│      · Docker Setup   │                                               │
+│    ▶ Side Project     │                                               │
+│  ▶ Areas              │                                               │
+│  ▶ Research           │                                               │
+│  ▶ Archive            │                                               │
+│  ▶ #templates         │                                               │
+│                       │                                               │
+├───────────────────────┴───────────────────────────────────────────────┤
+│ :  command   ?  help   SHIFT+ [N new] [A archive] …   CTRL+ [Q quit] │
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Keybindings
+## Navigation
 
-Active hotkeys are always shown in the **tooltip bar** at the bottom of the screen (Zellij-style). The bar is context-sensitive — it updates based on which pane is active and which view is open.
+### Focus & panes
 
 | Key | Action |
 |-----|--------|
-| `Tab` | Switch focus between Sidebar and Main area |
-| `j` / `↓` | Move cursor down / scroll |
-| `k` / `↑` | Move cursor up / scroll |
-| `←` | Collapse section (sidebar) · Move cursor to section header (on a note row) |
-| `→` | Expand section (sidebar) |
-| `Enter` | Expand/collapse section (sidebar) · Open note (list/sidebar note title) |
-| `e` | Open current note in `$EDITOR` |
-| `Esc` / `Backspace` | Go back in history (or back to note list) |
-| `[` / `Alt+Left` | Navigate back in pane history |
-| `]` / `Alt+Right` | Navigate forward in pane history |
-| `Ctrl+W` | Cycle focus to next split pane |
-| `Ctrl+P` | Open pane picker — then `←`/`→` to select, `Enter` to confirm, `Esc` to cancel |
-| `:` | Open command input (bottom bar) |
-| `q` / `Ctrl+C` | Quit (saves session) |
+| `Tab` | Switch focus: Sidebar ↔ Main pane |
+| `Ctrl+W` | Cycle to next split pane |
+| `Ctrl+P` | Open pane picker |
 
-**Mouse:** Left-click to focus a sidebar section, a split pane, or a note in the list.
+### Sidebar movement
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move cursor down |
+| `k` / `↑` | Move cursor up |
+| `Enter` | Open note / toggle section |
+| `→` | Expand section or project folder |
+| `←` | Collapse section or project folder |
+
+### In the main pane (viewer)
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Scroll down |
+| `k` / `↑` | Scroll up |
+| `[` / `Alt+←` | Navigate back in pane history |
+| `]` / `Alt+→` | Navigate forward |
+| `Esc` / `Backspace` | Go back to the note list |
 
 ---
 
-## Command Input
+## Commands
 
-Press `:` to open the command input at the **bottom** of the screen. A dropdown of matching commands appears above it as you type.
+Press `:` to open the command palette. A fuzzy dropdown appears as you type.
 
-- `↑` / `↓` — cycle through suggestions
-- `Tab` or `→` — complete the highlighted command and add a space for the next argument
-- `Enter` — run the command
-- `Esc` — cancel
+| Control | Action |
+|---------|--------|
+| `↑` / `↓` | Navigate suggestions |
+| `Tab` | Complete highlighted item |
+| `Enter` | Run the command |
+| `Esc` | Cancel |
 
-| Command | Description |
+### All commands
+
+| Command | What it does |
 |---------|-------------|
-| `:new "Title"` | Create a new note in Inbox |
-| `:open <query>` | Open a note by title (partial match) |
-| `:search <query>` | Full-text search (title + body) |
-| `:search #tag` | Search by tag |
-| `:move <note> → <state>` | Move a note to a different state |
-| `:archive <note>` | Archive a note |
-| `:split [note]` | Open a new split pane (optionally showing a note) |
-| `:close` | Close the focused split pane |
-| `:theme dark\|light` | Switch color theme (persisted across sessions) |
+| `:new "Title"` | Create a note in Inbox |
+| `:new project <name>` | Assign the open note to a project (moves to Projects) |
+| `:add project <name>` | Alias for `:new project` |
+| `:new template "Title"` | Create a new template note (auto-tagged) |
+| `:insert <name>` | Insert a template into the open note |
+| `:open <query>` | Open a note by title, content search, or `#tag` filter |
+| `:move <note> → <state>` | Move a note to a state |
+| `:archive <note>` | Move a note to Archive |
+| `:split [note]` | Open a side-by-side pane |
+| `:close` | Close the focused pane |
+| `:config` | Open settings menu |
+| `:help` | Open the help view |
+| `:quit` / `:exit` | Save session and quit |
 
-Valid states for `:move`: `inbox`, `projects`, `areas`, `research`, `archive`.
+**`:open` resolution:** exact title match → opens directly · no match → full-text search → shows list · `#tag` prefix → tag filter
 
----
-
-## Knowledge Model
-
-Follows a PARA-inspired workflow. All notes start in **Inbox** and must be explicitly promoted.
+**Valid states for `:move`:**
 
 ```
-Inbox
-├──► Projects  (max 4 active)
-│       └──► Archive
-├──► Areas
-│       └──► Archive
-└──► Research
-        └──► Archive
+inbox   projects   areas   research   archive
 ```
 
 ---
 
-## Note Format
+## Shortcuts
+
+### Shift shortcuts — open palette pre-filled
+
+| Key | Pre-fills | What it does |
+|-----|-----------|-------------|
+| `N` | `:new ` | Create a note |
+| `O` or `S` | `:open ` | Open / search |
+| `A` | `:archive ` | Archive a note |
+| `M` | `:move ` | Move to a state |
+| `T` | `:insert ` | Insert a template |
+| `P` | `:add project ` | Assign to a project |
+
+### Other keys
+
+| Key | Action |
+|-----|--------|
+| `?` | Open / close help view |
+| `e` | Open current note in the editor |
+| `Ctrl+C` | Cancel / close (same as Esc) |
+| `Ctrl+Z` | Undo last note save |
+| `Ctrl+Y` | Redo |
+| `Ctrl+Q` / `Ctrl+D` | Save session and quit |
+
+---
+
+## Knowledge model
+
+Notes flow through states. All notes start in **Inbox**.
+
+```
+                    ┌─────────────┐
+                    │    Inbox    │  ← all new notes land here
+                    └──────┬──────┘
+          ┌─────────────────┼─────────────────┐
+          ▼                 ▼                 ▼
+    ┌──────────┐     ┌──────────┐     ┌──────────────┐
+    │ Projects │     │  Areas   │     │  Research    │
+    │ (max 4)  │     │          │     │              │
+    └──────────┘     └──────────┘     └──────────────┘
+          │                 │                 │
+          └─────────────────┴─────────────────┘
+                            │
+                            ▼
+                    ┌──────────────┐
+                    │   Archive    │
+                    └──────────────┘
+```
+
+---
+
+## Projects workflow
+
+Projects are named collections of notes with a **4-project limit** (a GTD/PARA constraint to keep focus).
+
+### Assigning a note to a project
+
+```
+Step 1 — open a note (any state, usually Inbox)
+Step 2 — press P  or  type :add project <name>
+          → note moves to Projects automatically
+          → project is created if it doesn't exist
+          → autosuggest shows existing project names
+Step 3 — the note appears under its project in the sidebar
+```
+
+### Sidebar layout for Projects
+
+```
+▼ Projects
+  ▶ Homelab (2)       ← collapsed project folder
+  ▼ Side Project (1)  ← expanded project folder
+    · Landing Page    ← click to open in main pane
+```
+
+| Key / Action | Effect |
+|-------------|--------|
+| `Enter` on project folder | Toggle expand/collapse + open detail |
+| `→` on collapsed folder | Expand + load notes |
+| `←` on expanded folder | Collapse |
+| Click note under project | Open in main pane |
+
+### Project detail page
+
+Select a project folder header to open its detail page:
+
+- List of attached notes (clickable)
+- History log — every attach/detach event with timestamp
+- **Hemingway bridge** — press `e` to add a timestamped journal entry
+
+### Moving a note out of a project
+
+```
+:move <note> → inbox
+```
+
+The detach event is recorded in the project history.
+
+---
+
+## Templates
+
+There are two kinds of templates.
+
+### Creation templates (auto-applied on `:new`)
+
+Place a `.md` file in `vault/templates/`. It is applied when you create a note.
+
+| Variable | Replaced with |
+|----------|--------------|
+| `{{id}}` | Generated note ID |
+| `{{title}}` | Note title |
+| `{{created}}` | Creation timestamp |
+| `{{updated}}` | Last updated timestamp |
+
+### Insert templates (appended on demand)
+
+Any note tagged `template` in its frontmatter is an insert template.
+Create one with `:new template "Title"` (auto-tags it).
+
+```
+Step 1 — press T  or  type :insert <name>
+Step 2 — autosuggest filters template notes as you type
+Step 3 — template body is appended to the open note
+```
+
+Insert templates appear in **#templates** in the sidebar.
+
+---
+
+## Note format
 
 **Filename:** `<ID> <Title>.md` — e.g., `202606241530 Docker.md`
 
@@ -118,80 +266,93 @@ tags:
   - containers
 ---
 
-Note body goes here. [[Wikilinks]] are supported.
+Note body here. [[Wikilinks]] are supported.
 ```
 
 ---
 
-## Templates
-
-Place any `.md` file in `vault/templates/`. The first template found is applied when creating a new note. Supported variables:
-
-| Variable | Value |
-|----------|-------|
-| `{{id}}` | Generated timestamp ID |
-| `{{title}}` | Note title |
-| `{{created}}` | Creation timestamp |
-| `{{updated}}` | Update timestamp |
-
-Example template (`templates/default.md`):
-```markdown
----
-id: {{id}}
-title: {{title}}
-created: {{created}}
-updated: {{updated}}
-state: inbox
-tags: []
----
-
-## {{title}}
+## Links
 
 ```
-
----
-
-## Links and Backlinks
-
-Wikilink syntax is supported in note bodies:
-
-```
-[[Docker]]
-[[Docker|Container Runtime]]
+[[Docker]]                   → link to a note
+[[Docker|Container Runtime]] → link with display alias
 ```
 
-- Links to non-existing notes are valid — the note is created when opened.
+- Links to notes that don't exist yet are valid — the note is created when you open the link.
 - In read mode, `[[Docker|Container Runtime]]` renders as `Container Runtime`.
-- The viewer shows backlinks (other notes that link to the current note) at the bottom.
+- Working links are highlighted; broken links are shown as strikethrough.
+- Click a link in the viewer to navigate to it.
 
 ---
 
-## Search
+## Editor
 
-- `:search docker` — full-text search across titles and note bodies (SQLite FTS5)
-- `:search #linux` — tag search
+Press `e` to open the current note in the built-in inline editor.
 
----
-
-## Session Restore
-
-On quit, the current note and active sidebar section are saved to `.pkm/session.yaml`. The next launch restores them automatically.
-
----
-
-## File Watcher
-
-Changes to files in `vault/notes/` are detected automatically via fsnotify. The index and viewer update without requiring a restart — edits made in an external editor are reflected live.
+| Key | Action |
+|-----|--------|
+| `Tab` | Cycle between fields (title, tags, body) |
+| `Ctrl+S` | Save |
+| `Esc` | Cancel (discard changes) |
 
 ---
 
-## Pane Splits
+## Split panes
 
-Open multiple notes side by side with `:split [note]`. Each pane has its own independent navigation history (`[` / `]` to navigate). `Ctrl+W` cycles focus between panes. `:close` removes the focused pane.
+Open notes side by side:
+
+```
+:split [note]
+```
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+W` | Cycle focus between panes |
+| `Ctrl+P` | Open pane picker |
+| `:close` | Close the focused pane |
+
+Each pane has its own navigation history (`[` / `]` to go back/forward).
 
 ---
 
-## Running Tests
+## Vault structure
+
+```
+vault/
+├── notes/         ← all notes as .md files
+├── templates/     ← creation templates (optional)
+└── .pkm/
+    ├── config.yaml
+    ├── projects.yaml
+    └── index.db   ← SQLite search index
+```
+
+No content-based folder hierarchy — organization is through metadata, tags, and states.
+
+---
+
+## Configuration
+
+Open the config menu with `Ctrl+C` or `:config`. Navigate with `↑↓`, change values with `←→`, press `Esc` to save.
+
+| Setting | Options | Default |
+|---------|---------|---------|
+| Theme | Nord, Solarized Dark, Dracula, Gruvbox, Tokyo Night | Nord |
+| Sidebar width | 20%, 25%, 33% | 25% |
+| Restore session | on, off | on |
+| Line numbers | on, off | on |
+
+Session state (last open note, active section) is saved on quit and restored on next launch when "Restore session" is on.
+
+---
+
+## File watcher
+
+Changes to files in `vault/notes/` are picked up automatically. Edits made in an external editor appear in the viewer without restarting.
+
+---
+
+## Running tests
 
 ```sh
 go test ./...
@@ -199,9 +360,54 @@ go test ./...
 
 ---
 
-## Not Yet Implemented
+## Developer reference — CLI Standards
 
-- Mouse click-to-open for wikilinks in the viewer
-- Git status overlay
-- Backlinks panel in the viewer (index is built; UI display pending)
-- Query language / saved searches
+### DSL grammar
+
+```
+:<verb> [arg1] [→ arg2]
+:<compound verb> [arg1]
+```
+
+- **Verb** — one or two lowercase words after `:` (e.g. `new`, `move`, `add project`, `new template`)
+- Compound verbs use **longest-prefix matching** — `new project ` wins over `new ` when both match
+- Multi-slot commands use `→` (or `->`) as a separator
+- Quoting optional for free-text titles; quotes stripped before processing
+
+### Autosuggest rules by slot kind
+
+| Argument type | Match rule | Source |
+|---------------|-----------|--------|
+| Note / template title | Substring, case-insensitive | All vault notes, sorted by last updated |
+| State | Prefix, case-insensitive | Fixed list |
+| Theme | Prefix, case-insensitive | Fixed list |
+| Project name | Prefix, case-insensitive | Active projects in `projects.yaml` |
+
+### All commands at a glance
+
+| Command | Alias | Slot | Shift key |
+|---------|-------|------|-----------|
+| `new "Title"` | — | title | `N` |
+| `new project <name>` | — | project | — |
+| `add project <name>` | — | project | `P` |
+| `new template "Title"` | — | title | — |
+| `insert <name>` | — | template | `T` |
+| `open <query>` | — | note | `O` / `S` |
+| `move <note> → <state>` | — | note + state | `M` |
+| `archive <note>` | — | note | `A` |
+| `split [note]` | — | note | — |
+| `close` | — | — | — |
+| `theme <name>` | — | theme | — |
+| `config` | — | — | `Ctrl+C` (direct) |
+| `help` | — | — | `?` |
+| `quit` | `exit` | — | `Ctrl+Q` / `Ctrl+D` |
+
+### Adding a new command — checklist
+
+1. Add a `cmdDef` to `allCommands` in `palette.go`
+   - Compound verbs work automatically via longest-prefix match in `currentCmdDef()`
+2. Add routing to `handleCommand` in `commands.go`
+   - Compound commands: add `parts[0]+" "+parts[1]` check before the single-word switch
+3. If a new argument type is needed: add `slotKind`, update `contextSuggestions()` and `tabComplete()` in `palette.go`
+4. Add `Shift+Key` handler in `model.go` if a shortcut is needed
+5. Update `help_view.go`, tooltip bar, and this README

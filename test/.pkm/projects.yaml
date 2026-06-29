@@ -1,0 +1,40 @@
+projects:
+    - name: '"Test Project 1"'
+      created: 2026-06-26T22:56:26+02:00
+      history:
+        - timestamp: 2026-06-26T22:56:39+02:00
+          kind: note
+          message: Erster Hemmingway Eintrag
+        - timestamp: 2026-06-27T10:10:02+02:00
+          kind: attached
+          note_id: "202606262131"
+          note_title: Template Test
+        - timestamp: 2026-06-27T10:10:20+02:00
+          kind: detached
+          note_id: "202606262131"
+          note_title: Template Test
+    - name: '"Hurgawurga Project"'
+      created: 2026-06-27T10:10:20+02:00
+      history:
+        - timestamp: 2026-06-27T10:10:20+02:00
+          kind: attached
+          note_id: "202606262131"
+          note_title: Template Test
+        - timestamp: 2026-06-27T10:10:46+02:00
+          kind: detached
+          note_id: "202606262131"
+          note_title: Template Test
+    - name: '"wtf"'
+      created: 2026-06-27T10:10:46+02:00
+      history:
+        - timestamp: 2026-06-27T10:10:46+02:00
+          kind: attached
+          note_id: "202606262131"
+          note_title: Template Test
+    - name: '"'
+      created: 2026-06-27T10:16:24+02:00
+      history:
+        - timestamp: 2026-06-27T10:16:24+02:00
+          kind: attached
+          note_id: "202606251457"
+          note_title: Test

@@ -36,5 +36,6 @@ type Note struct {
 }
 
 type Vault struct {
-	Root string // absolute path to vault root
+	Root     string        // absolute path to vault root
+	Projects *ProjectStore // persistent project registry
 }

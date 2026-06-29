@@ -1,2 +1,9 @@
 .DS_Store
 pkm
+
+# Claude Code project config
+.claude/
+
+# Ephemeral vault state
+*.db
+session.yaml

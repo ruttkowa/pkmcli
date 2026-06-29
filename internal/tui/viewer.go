@@ -11,12 +11,20 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// linkRef holds the navigation target for one wikilink in parse order.
+type linkRef struct {
+	target string // note title (may not exist yet)
+}
+
 type viewerModel struct {
-	note        *vault.Note
-	rendered    string // glamour-rendered output, cached in Update() via preRender()
-	renderWidth int    // width used for the cached render
-	scrollOff   int
-	back        bool
+	note            *vault.Note
+	rendered        string // glamour-rendered body (below header), cached
+	renderedHeader  string // glamour-rendered sticky header, cached
+	headerLineCount int    // number of lines in renderedHeader
+	renderWidth     int    // width used for the cached render
+	scrollOff       int
+	back            bool
+	linkLines       map[int]string // body-relative line index → note title to navigate to
 }
 
 func newViewer() viewerModel {
@@ -28,13 +36,16 @@ func (m viewerModel) withNote(n *vault.Note) viewerModel {
 	m.scrollOff = 0
 	m.back = false
 	m.rendered = ""
+	m.renderedHeader = ""
+	m.headerLineCount = 0
 	m.renderWidth = 0
+	m.linkLines = nil
 	return m
 }
 
 // preRender runs glamour and caches the result. Call this from Update() —
 // NOT from render()/View() — so the cache persists across frames.
-func (m viewerModel) preRender(width int) viewerModel {
+func (m viewerModel) preRender(width int, titles map[string]bool) viewerModel {
 	if m.note == nil {
 		return m
 	}
@@ -49,14 +60,25 @@ func (m viewerModel) preRender(width int) viewerModel {
 		glamour.WithStandardStyle(glamourStyle),
 		glamour.WithWordWrap(width-4),
 	)
-	if err == nil {
-		if out, err := r.Render(renderBody(m.note)); err == nil && out != "" {
-			m.rendered = out
-			m.renderWidth = width
-			return m
-		}
+	if err != nil {
+		m.rendered = m.note.Body
+		m.renderWidth = width
+		return m
 	}
-	m.rendered = m.note.Body
+
+	// Render sticky header (title + meta + separator) separately.
+	if out, herr := r.Render(buildHeaderMd(m.note)); herr == nil {
+		m.renderedHeader = strings.TrimRight(out, "\n")
+		m.headerLineCount = strings.Count(m.renderedHeader, "\n") + 1
+	}
+
+	// Render scrollable body.
+	body, refs := buildBodyMd(m.note, titles)
+	if out, berr := r.Render(body); berr == nil && out != "" {
+		m.rendered, m.linkLines = processRenderedLinks(out, refs)
+	} else {
+		m.rendered = m.note.Body
+	}
 	m.renderWidth = width
 	return m
 }
@@ -87,28 +109,58 @@ func (m viewerModel) render(width, height int, focused bool) string {
 		rendered = m.note.Body // cold cache: show raw until Update() warms it
 	}
 
-	lines := strings.Split(rendered, "\n")
-	start := m.scrollOff
-	if start >= len(lines) {
-		start = len(lines) - 1
-	}
-	if start < 0 {
-		start = 0
-	}
+	bodyLines := strings.Split(rendered, "\n")
+
 	// Reserve one row for the scroll indicator.
 	contentRows := height - 1
 	if contentRows < 1 {
 		contentRows = 1
 	}
-	end := start + contentRows
-	if end > len(lines) {
-		end = len(lines)
+
+	var sb strings.Builder
+
+	// Sticky header: always rendered at the top.
+	if m.renderedHeader != "" {
+		headerLines := strings.Split(m.renderedHeader, "\n")
+		headerRows := m.headerLineCount
+		if headerRows > contentRows {
+			headerRows = contentRows
+		}
+		sb.WriteString(strings.Join(headerLines[:headerRows], "\n"))
+		contentRows -= headerRows
+		// Fold separator line.
+		if contentRows > 0 {
+			sep := lipgloss.NewStyle().
+				Foreground(activeTheme.BorderNormal).
+				Render(strings.Repeat("─", width-2))
+			sb.WriteByte('\n')
+			sb.WriteString(sep)
+			contentRows--
+		}
+		if contentRows > 0 {
+			sb.WriteByte('\n')
+		}
 	}
-	visible := strings.Join(lines[start:end], "\n")
+
+	// Scrollable body below the header.
+	start := m.scrollOff
+	if start >= len(bodyLines) {
+		start = len(bodyLines) - 1
+	}
+	if start < 0 {
+		start = 0
+	}
+	end := start + contentRows
+	if end > len(bodyLines) {
+		end = len(bodyLines)
+	}
+	if contentRows > 0 {
+		sb.WriteString(strings.Join(bodyLines[start:end], "\n"))
+	}
 
 	indicator := "\n"
-	if focused && len(lines) > 0 {
-		pct := (start * 100) / len(lines)
+	if focused && len(bodyLines) > 0 {
+		pct := (start * 100) / len(bodyLines)
 		indicator = "\n" + lipgloss.NewStyle().
 			Width(width - 2).
 			Foreground(activeTheme.TextDim).
@@ -121,12 +173,19 @@ func (m viewerModel) render(width, height int, focused bool) string {
 		Height(height).
 		Background(activeTheme.Bg).
 		Padding(0, 1).
-		Render(visible + indicator)
+		Render(sb.String() + indicator)
 }
 
-// renderBody substitutes wikilinks for display and prepends a title header.
-func renderBody(n *vault.Note) string {
-	body := substituteLinks(n.Body)
+// linkAtLine returns the note title linked on a given rendered line index, or "".
+func (m viewerModel) linkAtLine(renderedLine int) string {
+	if m.linkLines == nil {
+		return ""
+	}
+	return m.linkLines[renderedLine]
+}
+
+// buildHeaderMd returns the markdown for the sticky header (title + meta).
+func buildHeaderMd(n *vault.Note) string {
 	meta := fmt.Sprintf("**State:** %s", n.State)
 	if n.Project != "" {
 		meta += fmt.Sprintf("  •  **Project:** %s", n.Project)
@@ -134,12 +193,30 @@ func renderBody(n *vault.Note) string {
 	if len(n.Tags) > 0 {
 		meta += fmt.Sprintf("  •  **Tags:** #%s", strings.Join(n.Tags, " #"))
 	}
-	return fmt.Sprintf("# %s\n\n_%s_\n\n---\n\n%s", n.Title, meta, body)
+	return fmt.Sprintf("# %s\n\n_%s_", n.Title, meta)
 }
 
-// substituteLinks replaces [[Title|Alias]] → Alias and [[Title]] → Title.
-func substituteLinks(body string) string {
+// buildBodyMd substitutes wikilinks and returns the body-only markdown for glamour.
+func buildBodyMd(n *vault.Note, titles map[string]bool) (string, []linkRef) {
+	return substituteLinks(n.Body, titles)
+}
+
+// substituteLinks replaces [[Title|Alias]] / [[Title]] with glamour-ready markdown.
+// Working links become [·Alias·]() (glamour renders as colored link).
+// Broken links become ~~Alias~~ (glamour renders as strikethrough).
+// Both are wrapped in PUA sentinels for click-position tracking.
+// Spaces in aliases are replaced with nbsp to prevent glamour mid-token wrapping.
+func substituteLinks(body string, titles map[string]bool) (string, []linkRef) {
+	const (
+		wOpen  = "" // working link open sentinel
+		wClose = "" // working link close sentinel
+		bOpen  = "" // broken link open sentinel
+		bClose = "" // broken link close sentinel
+	)
+
+	var refs []linkRef
 	var b strings.Builder
+
 	for {
 		start := strings.Index(body, "[[")
 		if start == -1 {
@@ -155,12 +232,84 @@ func substituteLinks(body string) string {
 			continue
 		}
 		inner := rest[:end]
+		var target, alias string
 		if pipe := strings.Index(inner, "|"); pipe != -1 {
-			b.WriteString(inner[pipe+1:]) // alias
+			target = strings.TrimSpace(inner[:pipe])
+			alias = strings.TrimSpace(inner[pipe+1:])
 		} else {
-			b.WriteString(inner) // title
+			target = strings.TrimSpace(inner)
+			alias = target
 		}
+
+		exists := len(titles) > 0 && titles[strings.ToLower(target)]
+		refs = append(refs, linkRef{target: target})
+
+		// Replace spaces with nbsp so glamour won't wrap mid-alias.
+		display := strings.ReplaceAll(alias, " ", " ")
+
+		if exists {
+			b.WriteString(wOpen + "[·" + display + "·]()" + wClose)
+		} else {
+			b.WriteString(bOpen + "~~" + display + "~~" + bClose)
+		}
+
 		body = rest[end+2:]
 	}
-	return b.String()
+	return b.String(), refs
+}
+
+// processRenderedLinks walks the glamour output, strips PUA sentinels, and
+// builds a map of rendered-line-index → note target for click detection.
+// Sentinel pairs are matched to refs in left-to-right parse order.
+func processRenderedLinks(rendered string, refs []linkRef) (string, map[int]string) {
+	const (
+		wOpen  = ""
+		wClose = ""
+		bOpen  = ""
+		bClose = ""
+	)
+
+	lines := strings.Split(rendered, "\n")
+	linkMap := make(map[int]string)
+	refIdx := 0
+
+	for lineIdx, line := range lines {
+		for {
+			// Find whichever sentinel pair opens first on this line.
+			wIdx := strings.Index(line, wOpen)
+			bIdx := strings.Index(line, bOpen)
+
+			open, openS, closeS := -1, "", ""
+			switch {
+			case wIdx != -1 && (bIdx == -1 || wIdx < bIdx):
+				open, openS, closeS = wIdx, wOpen, wClose
+			case bIdx != -1:
+				open, openS, closeS = bIdx, bOpen, bClose
+			}
+			if open == -1 {
+				break
+			}
+
+			rest := line[open+len(openS):]
+			closeIdx := strings.Index(rest, closeS)
+			if closeIdx == -1 {
+				break // sentinel split across line — skip (rare with nbsp)
+			}
+
+			// Record first link target found on this line.
+			if _, seen := linkMap[lineIdx]; !seen && refIdx < len(refs) {
+				linkMap[lineIdx] = refs[refIdx].target
+			}
+			if refIdx < len(refs) {
+				refIdx++
+			}
+
+			// Strip the sentinel chars; keep the glamour-styled content between.
+			content := rest[:closeIdx]
+			line = line[:open] + content + rest[closeIdx+len(closeS):]
+		}
+		lines[lineIdx] = line
+	}
+
+	return strings.Join(lines, "\n"), linkMap
 }

@@ -25,7 +25,11 @@ func Open(path string) (*Vault, error) {
 			return nil, err
 		}
 	}
-	return &Vault{Root: abs}, nil
+	ps, err := openProjectStore(abs)
+	if err != nil {
+		return nil, fmt.Errorf("project store: %w", err)
+	}
+	return &Vault{Root: abs, Projects: ps}, nil
 }
 
 // NotesDir returns the absolute path to vault/notes/.
@@ -124,6 +128,25 @@ func (v *Vault) ListByState(state NoteState) ([]*Note, error) {
 func (v *Vault) SetState(n *Note, state NoteState) error {
 	n.State = state
 	return v.Save(n)
+}
+
+// ListByTag returns all notes that carry the given tag (case-insensitive, no # prefix).
+func (v *Vault) ListByTag(tag string) ([]*Note, error) {
+	all, err := v.ListAll()
+	if err != nil {
+		return nil, err
+	}
+	tagLower := strings.ToLower(tag)
+	var out []*Note
+	for _, n := range all {
+		for _, t := range n.Tags {
+			if strings.ToLower(t) == tagLower {
+				out = append(out, n)
+				break
+			}
+		}
+	}
+	return out, nil
 }
 
 // FindByTitle returns the first note whose title contains the query (case-insensitive).

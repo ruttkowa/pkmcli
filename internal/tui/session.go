@@ -12,7 +12,6 @@ import (
 type sessionData struct {
 	LastNoteID  string `yaml:"last_note_id,omitempty"`
 	ActiveState string `yaml:"active_state,omitempty"`
-	Theme       string `yaml:"theme,omitempty"`
 }
 
 func sessionPath(v *vault.Vault) string {
@@ -22,7 +21,6 @@ func sessionPath(v *vault.Vault) string {
 func saveSession(v *vault.Vault, m *Model) {
 	s := sessionData{
 		ActiveState: string(m.sidebar.activeState),
-		Theme:       activeTheme.Name,
 	}
 	sp := m.splits[m.activeSplit]
 	if sp.viewer.note != nil {

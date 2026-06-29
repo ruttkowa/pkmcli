@@ -1,0 +1,190 @@
+package tui
+
+import (
+	"strings"
+	"unicode/utf8"
+
+	"github.com/charmbracelet/lipgloss"
+)
+
+const helpContent = `NAVIGATION
+  j / ↓       move down
+  k / ↑       move up
+  Tab         switch focus: Sidebar ↔ Main pane
+  Ctrl+W      cycle to next split pane
+  Ctrl+P      open pane picker
+  Enter       open note / expand section
+  ←           collapse section (sidebar)
+  →           expand section (sidebar)
+  [  Alt+←    navigate back in pane history
+  ]  Alt+→    navigate forward in pane history
+  Esc         go back / close overlay
+
+READING & EDITING
+  e           open current note in the editor
+  Ctrl+S      save (in editor)
+  Esc         cancel edit without saving
+
+COMMAND PALETTE  —  press : to open
+  :new "Title"              create note in Inbox
+  :new project <name>       assign open note to a project (moves to Projects)
+  :add project <name>       same as :new project (alias)
+  :new template "Title"     create a new template note
+  :insert <name>            insert a template into the current note
+  :open <query>             open by title; or full-text search; or #tag filter
+  :move <note> → <state>    move note to a state
+  :archive <note>           archive a note
+  :split [note]             open a new side-by-side pane
+  :close                    close the focused pane
+  :config                   open settings
+  :quit  /  :exit           quit (session is saved)
+  :help                     show this page
+
+  Autosuggest: ↑/↓ to navigate, Tab to complete, Enter to run, Esc to cancel.
+
+QUIT
+  :quit  :exit              save session and quit
+  Ctrl+Q                    save session and quit
+  Ctrl+D                    save session and quit (Unix EOF convention)
+
+SHIFT SHORTCUTS  (open palette pre-filled)
+  N  :new       O/S  :open      A  :archive
+  M  :move      T    :insert    P  :add project
+
+CTRL SHORTCUTS
+  Ctrl+C  cancel / close    same as Esc in every mode
+  Ctrl+P  panes             open pane picker
+  Ctrl+Q  quit              save session and quit
+  Ctrl+W  next pane         cycle split pane focus
+  Ctrl+Z  undo              undo last note save
+  Ctrl+Y  redo              redo
+
+PROJECT WORKFLOW
+  1. Open a note (it starts in Inbox).
+  2. Press P or type :add project <name> to assign it to a project.
+     → The note moves to Projects automatically.
+     → If the project name is new, it is created. Max 4 active projects.
+  3. In the sidebar, expand Projects → expand the project folder to see its notes.
+  4. Click the project folder header to open the project detail page:
+     - See all attached notes.
+     - Read the history log (attach / detach events).
+     - Press e to add a Hemingway bridge entry (timestamped journal note).
+  5. To move a note out of a project: :move <note> → inbox  (or any other state).
+  6. Projects section shows an overview when no specific project is selected.
+
+TEMPLATE WORKFLOW
+  Creation templates  (applied automatically when creating a note):
+    Place a .md file in vault/templates/.
+    Variables: {{id}}  {{title}}  {{created}}  {{updated}}
+
+  Insert templates  (appended to the open note on demand):
+    Tag any note with "template" in its frontmatter (or use :new template "Title").
+    Press T or type :insert <name> to insert it into the current note.
+    Insert templates appear in #templates in the sidebar.
+
+LINKS
+  [[Note Title]]              link to another note
+  [[Note Title|Display Text]] link with alias (renders as "Display Text")
+  Click a link in the viewer to open it. Missing notes are created on open.
+
+KNOWLEDGE MODEL  (PARA-inspired)
+  Inbox → Projects / Areas / Research → Archive
+  All new notes land in Inbox.
+  Use :move to promote notes between states.
+  Max 4 active projects at a time.
+`
+
+// helpLines renders all help content lines styled and clamped to width.
+// Each element in the returned slice is one display row.
+func helpLines(width int) []string {
+	t := activeTheme
+
+	heading := lipgloss.NewStyle().Bold(true).Foreground(t.Accent)
+	normal := lipgloss.NewStyle().Foreground(t.TextPrimary)
+	muted := lipgloss.NewStyle().Foreground(t.TextSecond)
+	dim := lipgloss.NewStyle().Foreground(t.TextDim)
+	blank := lipgloss.NewStyle().Background(t.Bg)
+
+	clamp := func(s string) string {
+		if utf8.RuneCountInString(s) > width {
+			runes := []rune(s)
+			s = string(runes[:width])
+		}
+		return s
+	}
+
+	var lines []string
+	for _, line := range strings.Split(strings.TrimRight(helpContent, "\n"), "\n") {
+		var rendered string
+		switch {
+		case line == "":
+			rendered = blank.Render(strings.Repeat(" ", width))
+		case line[0] != ' ':
+			// Section heading — occupies full width
+			rendered = heading.Width(width).Render(clamp(line))
+		default:
+			trimmed := strings.TrimLeft(line, " ")
+			indent := len(line) - len(trimmed)
+			// Try to split into key/desc on a double-space gap within the first 28 chars.
+			idx := strings.Index(trimmed, "  ")
+			if idx > 0 && idx < 28 &&
+				!strings.HasPrefix(trimmed, "→") &&
+				!strings.HasPrefix(trimmed, "-") &&
+				!strings.HasPrefix(trimmed, "Place") &&
+				!strings.HasPrefix(trimmed, "Tag") &&
+				!strings.HasPrefix(trimmed, "Press") &&
+				!strings.HasPrefix(trimmed, "Variables") {
+				key := trimmed[:idx]
+				desc := strings.TrimSpace(trimmed[idx:])
+				prefix := strings.Repeat(" ", indent)
+				raw := prefix + key + "  " + desc
+				if utf8.RuneCountInString(raw) > width {
+					desc = clamp(desc)
+				}
+				rendered = strings.Repeat(" ", indent) + muted.Render(key) + "  " + normal.Render(desc)
+			} else {
+				rendered = dim.Render(clamp(line))
+			}
+		}
+		lines = append(lines, rendered)
+	}
+	return lines
+}
+
+// HelpTotalLines returns the total number of content lines for scroll clamping.
+func HelpTotalLines() int {
+	return len(strings.Split(strings.TrimRight(helpContent, "\n"), "\n"))
+}
+
+// renderHelpView renders the help as a scrollable document windowed to [scrollOff, scrollOff+height).
+func renderHelpView(width, height, scrollOff int) string {
+	t := activeTheme
+	lines := helpLines(width)
+
+	// Clamp scroll offset.
+	maxOff := len(lines) - height
+	if maxOff < 0 {
+		maxOff = 0
+	}
+	if scrollOff > maxOff {
+		scrollOff = maxOff
+	}
+	if scrollOff < 0 {
+		scrollOff = 0
+	}
+
+	// Window to visible slice.
+	end := scrollOff + height
+	if end > len(lines) {
+		end = len(lines)
+	}
+	visible := lines[scrollOff:end]
+
+	// Pad with blank lines to fill the pane exactly.
+	blank := lipgloss.NewStyle().Width(width).Background(t.Bg).Render("")
+	for len(visible) < height {
+		visible = append(visible, blank)
+	}
+
+	return strings.Join(visible, "\n")
+}

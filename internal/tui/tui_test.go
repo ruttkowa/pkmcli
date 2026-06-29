@@ -71,21 +71,49 @@ func step(t *testing.T, m Model, msg tea.Msg, label string) Model {
 // --- substituteLinks ---
 
 func TestSubstituteLinks(t *testing.T) {
+	titles := map[string]bool{"docker": true, "a": true}
+
 	cases := []struct {
-		in   string
-		want string
+		in      string
+		wantRef string // expected note title in the first returned linkRef
+		working bool   // whether the first link should be a working link
 	}{
-		{"no links", "no links"},
-		{"[[Docker]]", "Docker"},
-		{"[[Docker|Container Runtime]]", "Container Runtime"},
-		{"see [[A]] and [[B|Alias]] here", "see A and Alias here"},
-		{"[[unclosed", "[[unclosed"},
-		{"empty [[]] link", "empty  link"},
+		// Non-link text is passed through unchanged.
+		{"no links", "", false},
+		// Working link (title in set): wrapped with working sentinels.
+		{"[[Docker]]", "Docker", true},
+		// Alias: working link uses alias in display, target in ref.
+		{"[[Docker|Container Runtime]]", "Docker", true},
+		// Broken link (title not in set): wrapped with broken sentinels.
+		{"[[Missing]]", "Missing", false},
+		// Unclosed [[ is preserved as-is.
+		{"[[unclosed", "", false},
 	}
+
 	for _, tc := range cases {
-		got := substituteLinks(tc.in)
-		if got != tc.want {
-			t.Errorf("substituteLinks(%q) = %q, want %q", tc.in, got, tc.want)
+		got, refs := substituteLinks(tc.in, titles)
+		// Check that non-link text survives.
+		if tc.wantRef == "" {
+			if len(refs) != 0 {
+				t.Errorf("substituteLinks(%q): want 0 refs, got %d", tc.in, len(refs))
+			}
+			continue
+		}
+		if len(refs) == 0 {
+			t.Errorf("substituteLinks(%q): want ref %q, got none", tc.in, tc.wantRef)
+			continue
+		}
+		if refs[0].target != tc.wantRef {
+			t.Errorf("substituteLinks(%q): ref target = %q, want %q", tc.in, refs[0].target, tc.wantRef)
+		}
+		// Working links contain the working open sentinel; broken contain the broken open sentinel.
+		hasWorking := strings.Contains(got, "")
+		hasBroken := strings.Contains(got, "")
+		if tc.working && !hasWorking {
+			t.Errorf("substituteLinks(%q): expected working sentinel, got %q", tc.in, got)
+		}
+		if !tc.working && !hasBroken {
+			t.Errorf("substituteLinks(%q): expected broken sentinel, got %q", tc.in, got)
 		}
 	}
 }
@@ -196,7 +224,7 @@ func TestSplitPaneBackEmpty(t *testing.T) {
 // --- palette DSL input ---
 
 func TestPaletteValue(t *testing.T) {
-	p := newPalette(nil)
+	p := newPalette(nil, nil)
 	p.input = "  new \"Docker\"  "
 	if got := p.value(); got != "new \"Docker\"" {
 		t.Errorf("value() = %q", got)
@@ -206,17 +234,17 @@ func TestPaletteValue(t *testing.T) {
 // --- palette completion ---
 
 func TestPaletteVerbSuggestions(t *testing.T) {
-	p := newPalette(nil)
+	p := newPalette(nil, nil)
 
 	// Empty input → all commands
 	if got := p.verbSuggestions(); len(got) != len(allCommands) {
 		t.Errorf("empty input: want %d verb suggestions, got %d", len(allCommands), len(got))
 	}
 
-	// "n" → only "new"
+	// "n" → "new", "new project", "new template"
 	p.input = "n"
 	sug := p.verbSuggestions()
-	if len(sug) != 1 || sug[0].name != "new" {
+	if len(sug) != 3 || sug[0].name != "new" {
 		t.Errorf("input 'n': got %v", sug)
 	}
 
@@ -238,7 +266,7 @@ func TestPaletteVerbSuggestions(t *testing.T) {
 }
 
 func TestPaletteTabCompletes(t *testing.T) {
-	p := newPalette(nil)
+	p := newPalette(nil, nil)
 	p.input = "n"
 	p, _ = p.update(key("tab"))
 	if p.input != "new " {
@@ -247,7 +275,7 @@ func TestPaletteTabCompletes(t *testing.T) {
 }
 
 func TestPaletteActiveSlot(t *testing.T) {
-	p := newPalette(nil)
+	p := newPalette(nil, nil)
 
 	// "open " → slotNote
 	p.input = "open "
@@ -460,10 +488,10 @@ func TestSidebarExpandCollapse(t *testing.T) {
 	if !m.sidebar.expanded[vault.StateInbox] {
 		t.Fatal("Inbox should be expanded after Enter")
 	}
-	// Two notes were seeded, so items should be: Inbox, note1, note2, Projects, ...
+	// Two notes were seeded, so items should be: Inbox, note1, note2, Projects, ..., #templates
 	items := m.sidebar.items()
-	if len(items) != len(vault.AllStates)+2 {
-		t.Errorf("expected %d items after expand, got %d", len(vault.AllStates)+2, len(items))
+	if len(items) != len(vault.AllStates)+1+2 {
+		t.Errorf("expected %d items after expand, got %d", len(vault.AllStates)+1+2, len(items))
 	}
 	if items[1].isSection {
 		t.Error("items[1] should be a note, not a section")
@@ -494,8 +522,8 @@ func TestSidebarExpandCollapse(t *testing.T) {
 		t.Error("Inbox should be collapsed after second Enter")
 	}
 	items = m.sidebar.items()
-	if len(items) != len(vault.AllStates) {
-		t.Errorf("expected %d items after collapse, got %d", len(vault.AllStates), len(items))
+	if len(items) != len(vault.AllStates)+1 {
+		t.Errorf("expected %d items after collapse, got %d", len(vault.AllStates)+1, len(items))
 	}
 }
 
