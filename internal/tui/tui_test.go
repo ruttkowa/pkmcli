@@ -68,6 +68,14 @@ func step(t *testing.T, m Model, msg tea.Msg, label string) Model {
 	return next
 }
 
+func typeString(t *testing.T, m Model, s string) Model {
+	t.Helper()
+	for _, ch := range s {
+		m = step(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}}, "type "+string(ch))
+	}
+	return m
+}
+
 // --- substituteLinks ---
 
 func TestSubstituteLinks(t *testing.T) {
@@ -265,6 +273,20 @@ func TestPaletteVerbSuggestions(t *testing.T) {
 	}
 }
 
+func TestPaletteVerbSuggestionsEditingContext(t *testing.T) {
+	p := newPalette(nil, nil).withContext(ctxEditing)
+	sug := p.verbSuggestions()
+	if len(sug) == 0 || sug[0].name != "insert" {
+		t.Fatalf("ctxEditing: want \"insert\" ranked first, got %v", sug)
+	}
+
+	// Declaration order (no bias) is untouched by an unrelated context.
+	def := newPalette(nil, nil).verbSuggestions()
+	if def[0].name != allCommands[0].name {
+		t.Errorf("ctxDefault: want declaration order, got %v", def)
+	}
+}
+
 func TestPaletteTabCompletes(t *testing.T) {
 	p := newPalette(nil, nil)
 	p.input = "n"
@@ -354,6 +376,39 @@ func TestHeadlessNavigation(t *testing.T) {
 	}
 }
 
+// TestEditFromSidebarFocus guards against a regression where pressing "e" to
+// open the editor while a note is showing in the main pane but keyboard focus
+// is still on the sidebar left activePane out of sync: the edit-mode input
+// guard never engaged, so keystrokes (including Shift-hotkeys) leaked to the
+// global switch and the sidebar instead of the editor.
+func TestEditFromSidebarFocus(t *testing.T) {
+	m := setupTUI(t)
+	m = step(t, m, key("enter"), "enter (open note)")
+	m = step(t, m, key("tab"), "tab (-> sidebar)")
+	if m.activePane != paneSidebar {
+		t.Fatal("expected focus on sidebar before pressing e")
+	}
+
+	m = step(t, m, key("e"), "e (open editor while sidebar focused)")
+	sp := m.splits[m.activeSplit]
+	if sp.activeView != viewEdit {
+		t.Fatalf("expected viewEdit, got %v", sp.activeView)
+	}
+	if m.activePane != paneMain {
+		t.Fatal("activePane was not switched to paneMain on entering the editor")
+	}
+
+	// A capital letter that doubles as a global Shift-hotkey must land in the
+	// buffer, not reopen the palette or route to the sidebar.
+	m = step(t, m, key("N"), "N (type into editor body)")
+	if m.showPalette {
+		t.Error("Shift-hotkey leaked into the global switch while editing")
+	}
+	if !strings.Contains(m.splits[m.activeSplit].editor.ta.Value(), "N") {
+		t.Error("typed rune did not reach the editor's textarea")
+	}
+}
+
 func TestHeadlessPalette(t *testing.T) {
 	m := setupTUI(t)
 
@@ -439,6 +494,125 @@ func TestHeadlessCreateNote(t *testing.T) {
 	}
 	if sp.viewer.note.Title != "Test Note" {
 		t.Errorf("note title: got %q want %q", sp.viewer.note.Title, "Test Note")
+	}
+}
+
+// TestEditorCtrlSpaceInsertStaysInEditor covers Phase 2 of the editor/palette
+// integration: Ctrl+Space opens the palette on top of a still-live editor,
+// and :insert writes into the open buffer without saving or leaving edit mode.
+func TestEditorCtrlSpaceInsertStaysInEditor(t *testing.T) {
+	m := setupTUI(t)
+	tmpl, err := m.vault.Create("Meeting Notes")
+	if err != nil {
+		t.Fatalf("create template: %v", err)
+	}
+	tmpl.Tags = []string{"template"}
+	tmpl.Body = "## Agenda"
+	if err := m.vault.Save(tmpl); err != nil {
+		t.Fatalf("save template: %v", err)
+	}
+	m.index.Upsert(tmpl)
+
+	m = step(t, m, key("enter"), "open first note")
+	m = step(t, m, key("e"), "e (edit)")
+	if m.splits[m.activeSplit].activeView != viewEdit {
+		t.Fatal("expected viewEdit")
+	}
+	m = typeString(t, m, "draft text")
+
+	undoBefore := len(m.undoStack)
+	m = step(t, m, tea.KeyMsg{Type: tea.KeyCtrlAt}, "ctrl+space (open palette mid-edit)")
+	if !m.showPalette {
+		t.Fatal("expected palette to open")
+	}
+	if m.splits[m.activeSplit].activeView != viewEdit {
+		t.Fatal("editor should stay open behind the palette, draft untouched")
+	}
+
+	m = typeString(t, m, "insert Meeting Notes")
+	m = step(t, m, key("enter"), "submit :insert")
+
+	if m.showPalette {
+		t.Error("palette should close after running the command")
+	}
+	sp := m.splits[m.activeSplit]
+	if sp.activeView != viewEdit {
+		t.Fatalf("expected to land back in the editor, got %v", sp.activeView)
+	}
+	body := sp.editor.ta.Value()
+	if !strings.Contains(body, "draft text") {
+		t.Errorf("live draft lost, body = %q", body)
+	}
+	if !strings.Contains(body, "## Agenda") {
+		t.Errorf("template not inserted, body = %q", body)
+	}
+	if len(m.undoStack) != undoBefore {
+		t.Error(":insert mid-edit should not have saved (no new undo record)")
+	}
+}
+
+// TestEditorCtrlSpaceNonInsertCommitsAndExits covers the safety half of Phase
+// 2: any command other than :insert commits the draft (so it can't be
+// clobbered) and exits to the viewer, matching pre-Phase-2 behavior.
+func TestEditorCtrlSpaceNonInsertCommitsAndExits(t *testing.T) {
+	m := setupTUI(t)
+	m = step(t, m, key("enter"), "open first note")
+	title := m.splits[m.activeSplit].viewer.note.Title
+	m = step(t, m, key("e"), "e (edit)")
+	m = typeString(t, m, "draft text")
+
+	m = step(t, m, tea.KeyMsg{Type: tea.KeyCtrlAt}, "ctrl+space (open palette mid-edit)")
+	m = typeString(t, m, "archive "+title)
+	undoBefore := len(m.undoStack)
+	m = step(t, m, key("enter"), "submit :archive")
+
+	if m.showPalette {
+		t.Error("palette should close after running the command")
+	}
+	sp := m.splits[m.activeSplit]
+	if sp.activeView != viewNote {
+		t.Fatalf("expected to exit to viewNote after a non-insert command, got %v", sp.activeView)
+	}
+	if len(m.undoStack) != undoBefore+1 {
+		t.Error("expected the draft to be committed (one new undo record) before the command ran")
+	}
+	if !strings.Contains(sp.viewer.note.Body, "draft text") {
+		t.Errorf("committed draft lost, body = %q", sp.viewer.note.Body)
+	}
+	n, err := m.vault.FindByTitle(title)
+	if err != nil {
+		t.Fatalf("FindByTitle: %v", err)
+	}
+	if n.State != vault.StateArchive {
+		t.Errorf("note state = %v, want %v", n.State, vault.StateArchive)
+	}
+}
+
+// TestEditorCtrlSpaceEscCancelsPaletteKeepsDraft checks that dismissing the
+// palette without running a command (Esc) neither saves nor discards the
+// in-progress edit — it just closes the overlay.
+func TestEditorCtrlSpaceEscCancelsPaletteKeepsDraft(t *testing.T) {
+	m := setupTUI(t)
+	m = step(t, m, key("enter"), "open first note")
+	m = step(t, m, key("e"), "e (edit)")
+	m = typeString(t, m, "draft text")
+
+	undoBefore := len(m.undoStack)
+	m = step(t, m, tea.KeyMsg{Type: tea.KeyCtrlAt}, "ctrl+space (open palette mid-edit)")
+	m = step(t, m, key("esc"), "esc (cancel palette)")
+
+	if m.showPalette {
+		t.Error("palette should be closed after Esc")
+	}
+	sp := m.splits[m.activeSplit]
+	if sp.activeView != viewEdit {
+		t.Fatalf("expected to remain in the editor, got %v", sp.activeView)
+	}
+	if !strings.Contains(sp.editor.ta.Value(), "draft text") {
+		t.Errorf("draft lost after cancelling the palette, body = %q", sp.editor.ta.Value())
+	}
+	if len(m.undoStack) != undoBefore {
+		t.Error("cancelling the palette should not have saved")
 	}
 }
 
@@ -536,6 +710,38 @@ func TestHeadlessMouseMotionIgnored(t *testing.T) {
 	m = step(t, m, motionMsg, "mouse motion")
 	if m.activeSplit != before {
 		t.Error("mouse motion should not change active split")
+	}
+}
+
+// TestProjectDetailBridgeEntryDoesNotLeak guards against a regression where
+// the project-detail bridge-entry text field had no early-return guard (unlike
+// Editor/Palette/Config/PanePicker), so global Shift-hotkeys and "?" and ":"
+// hijacked focus instead of being typed into the entry.
+func TestProjectDetailBridgeEntryDoesNotLeak(t *testing.T) {
+	m := setupTUI(t)
+	p, err := m.vault.Projects.Create("Homelab")
+	if err != nil {
+		t.Fatalf("Projects.Create: %v", err)
+	}
+	m.splits[m.activeSplit].projectDetail = newProjectDetailPane(p, nil)
+	m.splits[m.activeSplit].activeView = viewProjectDetail
+
+	m = step(t, m, key("e"), "e (start bridge entry)")
+	if !m.splits[m.activeSplit].projectDetail.editingBridge {
+		t.Fatal("expected editingBridge=true after e")
+	}
+
+	// Characters that double as global hotkeys must land in the entry field.
+	m = step(t, m, key("N"), "N (type into bridge entry)")
+	m = step(t, m, key("?"), "? (type into bridge entry)")
+	if m.showPalette {
+		t.Error("bridge entry leaked a keystroke to the global palette shortcut")
+	}
+	if m.splits[m.activeSplit].activeView != viewProjectDetail {
+		t.Error("bridge entry leaked a keystroke that switched away from Project Detail")
+	}
+	if got := m.splits[m.activeSplit].projectDetail.bridgeInput; got != "N?" {
+		t.Errorf("bridgeInput = %q, want %q", got, "N?")
 	}
 }
 

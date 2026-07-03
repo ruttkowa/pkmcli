@@ -23,9 +23,14 @@ const helpContent = `NAVIGATION
 READING & EDITING
   e           open current note in the editor
   Ctrl+S      save (in editor)
+  Ctrl+Space  open the command palette without leaving the editor
   Esc         cancel edit without saving
 
-COMMAND PALETTE  —  press : to open
+  While editing, :insert writes straight into the open note — you stay
+  in the editor. Any other command (e.g. :archive, :move) saves the
+  draft first, then runs normally and exits to the viewer.
+
+COMMAND PALETTE  —  press : or Ctrl+Space to open
   :new "Title"              create note in Inbox
   :new project <name>       assign open note to a project (moves to Projects)
   :add project <name>       same as :new project (alias)

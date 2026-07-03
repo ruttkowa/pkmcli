@@ -81,7 +81,7 @@ On first run the vault directory is created automatically. Omit the path to be p
 
 ## Commands
 
-Press `:` to open the command palette. A fuzzy dropdown appears as you type.
+Press `:` to open the command palette. A fuzzy dropdown appears as you type. `Ctrl+Space` also opens it, and additionally works from inside the editor — a bare `:` has to stay a literal character while editing. Opened this way, the editor keeps running underneath: `:insert` writes the template straight into the open note and you stay in the editor; any other command (`:archive`, `:move`, …) saves the draft first, then runs normally and exits to the viewer, so it can never act on stale content. The palette's default verb order shifts a little based on where you opened it from — e.g. opening it from the editor puts `:insert` first.
 
 | Control | Action |
 |---------|--------|
@@ -293,6 +293,7 @@ Press `e` to open the current note in the built-in inline editor.
 |-----|--------|
 | `Tab` | Cycle between fields (title, tags, body) |
 | `Ctrl+S` | Save |
+| `Ctrl+Space` | Open the command palette without leaving the editor |
 | `Esc` | Cancel (discard changes) |
 
 ---
@@ -401,6 +402,10 @@ go test ./...
 | `config` | — | — | `Ctrl+C` (direct) |
 | `help` | — | — | `?` |
 | `quit` | `exit` | — | `Ctrl+Q` / `Ctrl+D` |
+
+### Verb ranking by context
+
+`verbSuggestions()` in `palette.go` shows commands in `allCommands` declaration order by default. A palette opened via `newPalette(...).withContext(ctx)` reorders matches using a fixed priority table (`verbPriority`) keyed by `verbContext` — a hand-authored bias, not a learned/frequency ranking. Current contexts: `ctxNoteOpen` (bare `:` while a note is open) and `ctxEditing` (`Ctrl+Space` from inside the editor, where `:insert` ranks first). Add a new context by adding a `verbContext` constant, an entry in `verbPriority`, and passing `.withContext(...)` from the relevant call site in `model.go`.
 
 ### Adding a new command — checklist
 

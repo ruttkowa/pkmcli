@@ -124,6 +124,54 @@ func (m Model) computeLayout() layout {
 	return layout{sw, mw, paneInner, innerH}
 }
 
+// resizeOpenEditors re-renders each split's viewer and, for any split
+// currently in the editor, resizes the textarea/inputs to fit the given
+// layout. Called whenever available space changes: terminal resize, config
+// close, or the palette opening/closing over an active edit session.
+func (m *Model) resizeOpenEditors(l layout) {
+	for i := range m.splits {
+		m.splits[i].viewer = m.splits[i].viewer.preRender(l.paneWidth, m.titleSet)
+		if m.splits[i].activeView == viewEdit {
+			inputW := max(1, l.paneWidth-editLabelWidth)
+			m.splits[i].editor.tagsInput.Width = inputW
+			m.splits[i].editor.projInput.Width = inputW
+			m.splits[i].editor.ta.SetWidth(l.paneWidth)
+			m.splits[i].editor.contentHeight = l.contentHeight
+			m.splits[i].editor.ta.SetHeight(m.splits[i].editor.bodyHeight())
+		}
+	}
+}
+
+// commitEditorDraft saves a split's in-progress edit and returns it to the
+// note viewer. Used by Ctrl+S, and by the palette when a command other than
+// :insert is run mid-edit — those commands act on the saved note, so the
+// draft must be committed first or a later save would clobber them.
+func (m *Model) commitEditorDraft(sp *splitPane) {
+	n := sp.editor.note
+	oldNote := *n // snapshot before mutation
+	n.Body = sp.editor.ta.Value()
+	n.State = vault.AllStates[sp.editor.stateIdx]
+	n.Tags = parseTags(sp.editor.tagsInput.Value())
+	n.Project = strings.TrimSpace(sp.editor.projInput.Value())
+	if saveErr := m.vault.Save(n); saveErr != nil {
+		m.statusMsg = "save error: " + saveErr.Error()
+	} else {
+		rec := undoRecord{oldNote: oldNote, newNote: *n}
+		m.undoStack = append(m.undoStack, rec)
+		if len(m.undoStack) > 20 {
+			m.undoStack = m.undoStack[1:]
+		}
+		m.redoStack = nil
+		m.index.Upsert(n)
+		sp.viewer = sp.viewer.withNote(n)
+		l := m.computeLayout()
+		sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+		m.statusMsg = "saved: " + n.Title
+	}
+	sp.editor = editPane{}
+	sp.activeView = viewNote
+}
+
 func New(v *vault.Vault, idx *index.Index) Model {
 	m := Model{
 		vault:      v,
@@ -195,18 +243,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		// Re-render open notes and resize active edit panes for the new terminal width.
-		l := m.computeLayout()
-		for i := range m.splits {
-			m.splits[i].viewer = m.splits[i].viewer.preRender(l.paneWidth, m.titleSet)
-			if m.splits[i].activeView == viewEdit {
-				inputW := max(1, l.paneWidth-editLabelWidth)
-				m.splits[i].editor.tagsInput.Width = inputW
-				m.splits[i].editor.projInput.Width = inputW
-				m.splits[i].editor.ta.SetWidth(l.paneWidth)
-				m.splits[i].editor.contentHeight = l.contentHeight
-				m.splits[i].editor.ta.SetHeight(m.splits[i].editor.bodyHeight())
-			}
-		}
+		m.resizeOpenEditors(m.computeLayout())
 
 	case tea.MouseMsg:
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
@@ -222,14 +259,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.palette, cmd = m.palette.update(msg)
 			cmds = append(cmds, cmd)
 			if m.palette.submitted {
-				result, cmd := m.handleCommand(m.palette.value())
+				raw := m.palette.value()
+				// A command other than :insert acts on the saved note, not the
+				// live buffer — commit the draft first so the two can't diverge.
+				// :insert writes straight into the open editor (see cmdInsert).
+				if len(m.splits) > 0 {
+					if sp := &m.splits[m.activeSplit]; sp.activeView == viewEdit && !isLiveEditCommand(raw) {
+						m.commitEditorDraft(sp)
+					}
+				}
+				result, cmd := m.handleCommand(raw)
 				if result != "" {
 					m.statusMsg = result
 				}
 				m.showPalette = false
+				m.resizeOpenEditors(m.computeLayout())
 				cmds = append(cmds, cmd)
 			} else if m.palette.cancelled {
 				m.showPalette = false
+				m.resizeOpenEditors(m.computeLayout())
 			}
 			return m, tea.Batch(cmds...)
 		}
@@ -238,38 +286,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.activePane == paneMain && len(m.splits) > 0 {
 			sp := &m.splits[m.activeSplit]
 			if sp.activeView == viewEdit {
+				// Ctrl+Space opens the palette as an overlay on top of the still-
+				// live editor (draft untouched) — the only way to reach it while
+				// editing, since a bare ":" must stay a literal character in note
+				// bodies. See the showPalette branch above for what runs on submit.
+				if msg.String() == "ctrl+@" {
+					m.showPalette = true
+					m.palette = newPalette(sortedNotes(m.vault), m.vault.Projects.ActiveNames()).withContext(ctxEditing)
+					m.resizeOpenEditors(m.computeLayout())
+					return m, nil
+				}
 				var cmd tea.Cmd
 				sp.editor, cmd = sp.editor.update(msg)
 				cmds = append(cmds, cmd)
 				if sp.editor.saved {
-					n := sp.editor.note
-					oldNote := *n // snapshot before mutation
-					n.Body = sp.editor.ta.Value()
-					n.State = vault.AllStates[sp.editor.stateIdx]
-					n.Tags = parseTags(sp.editor.tagsInput.Value())
-					n.Project = strings.TrimSpace(sp.editor.projInput.Value())
-					if saveErr := m.vault.Save(n); saveErr != nil {
-						m.statusMsg = "save error: " + saveErr.Error()
-					} else {
-						rec := undoRecord{oldNote: oldNote, newNote: *n}
-						m.undoStack = append(m.undoStack, rec)
-						if len(m.undoStack) > 20 {
-							m.undoStack = m.undoStack[1:]
-						}
-						m.redoStack = nil
-						m.index.Upsert(n)
-						sp.viewer = sp.viewer.withNote(n)
-						l := m.computeLayout()
-						sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
-						m.statusMsg = "saved: " + n.Title
-					}
-					sp.editor = editPane{}
-					sp.activeView = viewNote
+					m.commitEditorDraft(sp)
 				} else if sp.editor.cancelled {
 					sp.editor = editPane{}
 					sp.activeView = viewNote
 				}
 				return m, tea.Batch(cmds...)
+			}
+
+			// Project Detail's bridge-entry field captures all input — bypass
+			// global shortcuts the same way Editor/Palette/Config/PanePicker do.
+			if sp.activeView == viewProjectDetail && sp.projectDetail.editingBridge {
+				m.updateProjectDetail(sp, msg)
+				return m, nil
 			}
 		}
 
@@ -281,18 +324,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				saveConfig(m.vault, m.cfg)
 				// Treat config-close like a resize: rerender all viewers at
 				// potentially new layout (sidebar width) and theme.
-				l := m.computeLayout()
-				for i := range m.splits {
-					m.splits[i].viewer = m.splits[i].viewer.preRender(l.paneWidth, m.titleSet)
-					if m.splits[i].activeView == viewEdit {
-						inputW := max(1, l.paneWidth-editLabelWidth)
-						m.splits[i].editor.tagsInput.Width = inputW
-						m.splits[i].editor.projInput.Width = inputW
-						m.splits[i].editor.ta.SetWidth(l.paneWidth)
-						m.splits[i].editor.contentHeight = l.contentHeight
-						m.splits[i].editor.ta.SetHeight(m.splits[i].editor.bodyHeight())
-					}
-				}
+				m.resizeOpenEditors(m.computeLayout())
 			case "j", "down":
 				m.configView = m.configView.moveCursor(1)
 			case "k", "up":
@@ -342,9 +374,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.handleRedo()
 			return m, nil
 
-		case ":":
+		case ":", "ctrl+@": // ctrl+@ is how terminals report Ctrl+Space
 			m.showPalette = true
-			m.palette = newPalette(sortedNotes(m.vault), m.vault.Projects.ActiveNames())
+			ctx := ctxDefault
+			if len(m.splits) > 0 && m.splits[m.activeSplit].activeView == viewNote {
+				ctx = ctxNoteOpen
+			}
+			m.palette = newPalette(sortedNotes(m.vault), m.vault.Projects.ActiveNames()).withContext(ctx)
 			return m, nil
 
 		case "ctrl+p":
@@ -412,6 +448,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				var cmd tea.Cmd
 				sp.editor, cmd = newEditPane(sp.viewer.note, l.paneWidth, l.contentHeight, sortedNotes(m.vault), m.cfg.LineNumbers)
 				sp.activeView = viewEdit
+				m.activePane = paneMain
 				return m, cmd
 			}
 
@@ -504,22 +541,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			case viewProjectDetail:
-				pd := sp.projectDetail.update(msg)
-				if pd.bridgeDone {
-					p := pd.project
-					_ = m.vault.Projects.AddHistory(p.Name, vault.HistoryEntry{
-						Timestamp: timeNow(),
-						Kind:      vault.HistoryKindNote,
-						Message:   pd.bridgeMessage,
-					})
-					pd.bridgeDone = false
-					pd.bridgeMessage = ""
-					// Reload project to pick up updated history.
-					if updated, ok := m.vault.Projects.Get(p.Name); ok {
-						pd.project = updated
-					}
-				}
-				sp.projectDetail = pd
+				m.updateProjectDetail(sp, msg)
 			case viewProjectsOverview:
 				if msg.String() == "esc" || msg.String() == "backspace" {
 					sp.activeView = viewList
@@ -1036,7 +1058,7 @@ func (m Model) renderTooltipBar() string {
 
 	// Edit mode: show edit-specific hints.
 	if m.activePane == paneMain && len(m.splits) > 0 && m.splits[m.activeSplit].activeView == viewEdit {
-		bar := strings.Join([]string{chip("^S", "save"), chip("Tab", "cycle fields"), chip("Esc", "cancel"), chip("^C", "quit")}, " ")
+		bar := strings.Join([]string{chip("^S", "save"), chip("^Space", "command"), chip("Tab", "cycle fields"), chip("Esc", "cancel"), chip("^C", "quit")}, " ")
 		return lipgloss.NewStyle().Width(m.width).Background(activeTheme.StatusBg).Render(bar)
 	}
 
@@ -1072,6 +1094,27 @@ func (m Model) renderTooltipBar() string {
 		grp("SHIFT +") + " " + shiftChips + "   " +
 		grp("CTRL +") + " " + ctrlChips
 	return withStatus(bar)
+}
+
+// updateProjectDetail forwards a key to the project detail pane and, if it
+// completed a bridge entry, records the history event and reloads the project.
+func (m *Model) updateProjectDetail(sp *splitPane, msg tea.KeyMsg) {
+	pd := sp.projectDetail.update(msg)
+	if pd.bridgeDone {
+		p := pd.project
+		_ = m.vault.Projects.AddHistory(p.Name, vault.HistoryEntry{
+			Timestamp: timeNow(),
+			Kind:      vault.HistoryKindNote,
+			Message:   pd.bridgeMessage,
+		})
+		pd.bridgeDone = false
+		pd.bridgeMessage = ""
+		// Reload project to pick up updated history.
+		if updated, ok := m.vault.Projects.Get(p.Name); ok {
+			pd.project = updated
+		}
+	}
+	sp.projectDetail = pd
 }
 
 func (m *Model) showSectionLanding(state vault.NoteState, isTemplates bool) {

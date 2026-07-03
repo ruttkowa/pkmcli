@@ -10,6 +10,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// isLiveEditCommand reports whether raw's verb operates on an open editor's
+// live buffer (cmdInsert) rather than the saved note, so it's safe to run
+// without first committing an in-progress draft.
+func isLiveEditCommand(raw string) bool {
+	verb, _, _ := strings.Cut(strings.TrimPrefix(raw, ":"), " ")
+	return verb == "insert"
+}
+
 // handleCommand parses and executes a palette command, returning a status message and optional Cmd.
 func (m *Model) handleCommand(raw string) (string, tea.Cmd) {
 	raw = strings.TrimPrefix(raw, ":")
@@ -291,15 +299,14 @@ func (m *Model) cmdConfig(args []string) (string, tea.Cmd) {
 	return fmt.Sprintf("unknown config key: %q", args[0]), nil
 }
 
-// cmdInsert inserts a template note's body into the currently open note.
+// cmdInsert inserts a template note's body into the currently open note. If
+// the note is mid-edit, it writes straight into the live editor buffer
+// instead of the saved note — see isLiveEditCommand.
 func (m *Model) cmdInsert(args []string) (string, tea.Cmd) {
 	if len(args) == 0 {
 		return "usage: :insert <template>", nil
 	}
 	sp := &m.splits[m.activeSplit]
-	if sp.viewer.note == nil {
-		return "no note open", nil
-	}
 	query := strings.Join(args, " ")
 	tmpl, err := m.vault.FindByTitle(query)
 	if err != nil {
@@ -318,6 +325,23 @@ func (m *Model) cmdInsert(args []string) (string, tea.Cmd) {
 	templateBody := strings.TrimRight(tmpl.Body, "\n\r \t")
 	if templateBody == "" {
 		return "template is empty", nil
+	}
+
+	if sp.activeView == viewEdit {
+		current := strings.TrimRight(sp.editor.ta.Value(), "\n\r \t")
+		next := templateBody
+		if current != "" {
+			next = current + "\n" + templateBody
+		}
+		sp.editor.ta.SetValue(next)
+		sp.editor.ta, _ = sp.editor.ta.Update(tea.KeyMsg{Type: tea.KeyCtrlEnd})
+		sp.editor.wordCount = countWords(next)
+		sp.editor = sp.editor.refreshLinkSuggest()
+		return "inserted: " + tmpl.Title, nil
+	}
+
+	if sp.viewer.note == nil {
+		return "no note open", nil
 	}
 	n := sp.viewer.note
 	currentBody := strings.TrimRight(n.Body, "\n\r \t")

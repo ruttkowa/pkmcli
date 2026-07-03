@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"sort"
 	"strings"
 
 	"pkm/internal/vault"
@@ -137,6 +138,40 @@ type paletteModel struct {
 	cancelled    bool
 	notes        []*vault.Note // pre-sorted by Updated desc for note completions
 	projectNames []string      // active project names for slotProject autosuggest
+	verbCtx      verbContext   // biases verb-suggestion order; zero value = declaration order
+}
+
+// verbContext describes why the palette was opened, so the verb list can be
+// reordered toward the commands most likely to be used from that situation.
+// This is a fixed, hand-authored bias — not a learned/frequency ranking.
+type verbContext int
+
+const (
+	ctxDefault  verbContext = iota
+	ctxNoteOpen             // opened while a note is showing in the main pane
+	ctxEditing              // opened via Ctrl+Space from inside the editor (save-and-exit already ran)
+)
+
+// verbPriority ranks command names within a context; higher sorts first.
+// Commands absent from a context's map keep their declaration-order position.
+var verbPriority = map[verbContext]map[string]int{
+	ctxNoteOpen: {
+		"move":    3,
+		"archive": 2,
+		"insert":  1,
+	},
+	ctxEditing: {
+		"insert":       5,
+		"new template": 3,
+		"move":         2,
+		"archive":      1,
+	},
+}
+
+// withContext sets the verb-ranking bias for this palette instance.
+func (p paletteModel) withContext(ctx verbContext) paletteModel {
+	p.verbCtx = ctx
+	return p
 }
 
 func newPalette(notes []*vault.Note, projectNames []string) paletteModel {
@@ -241,14 +276,21 @@ func (p paletteModel) currentStateFragment() string {
 
 func (p paletteModel) verbSuggestions() []cmdDef {
 	trimmed := strings.TrimLeft(p.input, " ")
-	if trimmed == "" {
-		return allCommands
-	}
 	var out []cmdDef
-	for _, c := range allCommands {
-		if strings.HasPrefix(c.name, trimmed) {
-			out = append(out, c)
+	if trimmed == "" {
+		out = append(out, allCommands...)
+	} else {
+		for _, c := range allCommands {
+			if strings.HasPrefix(c.name, trimmed) {
+				out = append(out, c)
+			}
 		}
+	}
+
+	if prio := verbPriority[p.verbCtx]; len(prio) > 0 {
+		sort.SliceStable(out, func(i, j int) bool {
+			return prio[out[i].name] > prio[out[j].name]
+		})
 	}
 	return out
 }
