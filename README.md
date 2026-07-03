@@ -334,7 +334,7 @@ No content-based folder hierarchy — organization is through metadata, tags, an
 
 ## Configuration
 
-Open the config menu with `Ctrl+C` or `:config`. Navigate with `↑↓`, change values with `←→`, press `Esc` to save.
+Open the config menu with `:config`. Navigate with `↑↓`, change values with `←→`, press `Esc` to save.
 
 | Setting | Options | Default |
 |---------|---------|---------|
@@ -399,7 +399,7 @@ go test ./...
 | `split [note]` | — | note | — |
 | `close` | — | — | — |
 | `theme <name>` | — | theme | — |
-| `config` | — | — | `Ctrl+C` (direct) |
+| `config` | — | — | — |
 | `help` | — | — | `?` |
 | `quit` | `exit` | — | `Ctrl+Q` / `Ctrl+D` |
 
