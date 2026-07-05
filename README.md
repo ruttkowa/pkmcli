@@ -99,12 +99,15 @@ Press `:` to open the command palette. A fuzzy dropdown appears as you type. `Ct
 | `:add project <name>` | Alias for `:new project` |
 | `:new template "Title"` | Create a new template note (auto-tagged) |
 | `:insert <name>` | Insert a template into the open note |
+| `:insert var <name>` | Insert a variable's value at the cursor (edit mode only) |
 | `:open <query>` | Open a note by title, content search, or `#tag` filter |
 | `:move <note> → <state>` | Move a note to a state |
 | `:archive <note>` | Move a note to Archive |
 | `:split [note]` | Open a side-by-side pane |
 | `:close` | Close the focused pane |
 | `:config` | Open settings menu |
+| `:config export [path]` | Write config to a file (default `.pkm/config-export.yaml`) |
+| `:config import [path]` | Load config from a file |
 | `:help` | Open the help view |
 | `:quit` / `:exit` | Save session and quit |
 
@@ -119,6 +122,8 @@ inbox   projects   areas   research   archive
 ---
 
 ## Shortcuts
+
+`Ctrl+W`, `Ctrl+P`, `Ctrl+Q`, `Ctrl+Z`, `Ctrl+Y`, `Ctrl+S`, and `Ctrl+Space` below are defaults — remap any of them in `:config` → Keybindings if they collide with your terminal multiplexer.
 
 ### Shift shortcuts — open palette pre-filled
 
@@ -246,6 +251,9 @@ Step 3 — template body is appended to the open note
 
 Insert templates appear in **#templates** in the sidebar.
 
+`{{id}}`, `{{title}}`, `{{created}}`, `{{updated}}`, and any variable defined
+in `:config` → Variables are all substituted when the template is inserted.
+
 ---
 
 ## Note format
@@ -334,7 +342,11 @@ No content-based folder hierarchy — organization is through metadata, tags, an
 
 ## Configuration
 
-Open the config menu with `:config`. Navigate with `↑↓`, change values with `←→`, press `Esc` to save.
+Open the config menu with `:config`. It has three tabs — cycle with `Tab` / `Shift+Tab` — and `Esc` saves and closes from any of them.
+
+### General
+
+Navigate with `↑↓`, change values with `←→`.
 
 | Setting | Options | Default |
 |---------|---------|---------|
@@ -345,11 +357,72 @@ Open the config menu with `:config`. Navigate with `↑↓`, change values with 
 
 Session state (last open note, active section) is saved on quit and restored on next launch when "Restore session" is on.
 
+### Keybindings
+
+Remaps the global chords most likely to collide with a terminal multiplexer's own prefix (see [Running under tmux / zellij](#running-under-tmux--zellij)):
+
+| Action | Default |
+|--------|---------|
+| Command palette | `Ctrl+Space` |
+| Pane picker | `Ctrl+P` |
+| Next pane | `Ctrl+W` |
+| Quit | `Ctrl+Q` |
+| Undo | `Ctrl+Z` |
+| Redo | `Ctrl+Y` |
+| Save (editor) | `Ctrl+S` |
+
+`↑↓` selects, `Enter` captures the next keypress as the new binding, `d` resets the selected action to its default. Only `Ctrl`/`Alt` chords are accepted — a bare letter would silently shadow navigation elsewhere. Mode-internal keys (arrows, `hjkl`, etc.) aren't remappable.
+
+### Variables
+
+Simple key-value pairs used by `:insert var <name>` and by `{{name}}` substitution in `:insert <template>`. `↑↓` selects, `Enter` on an existing row edits its value, `Enter` on **+ Add variable** creates one, `d` deletes.
+
+### Export / import
+
+```
+:config export [path]   # default: .pkm/config-export.yaml
+:config import [path]
+```
+
+Paths are relative to the vault root unless absolute. Importing a config written by a different version never crashes: unknown fields are ignored and any field missing from the file falls back to its default.
+
 ---
 
 ## File watcher
 
 Changes to files in `vault/notes/` are picked up automatically. Edits made in an external editor appear in the viewer without restarting.
+
+---
+
+## Running under tmux / zellij
+
+pkm hardcodes a handful of global chords, its own split-pane system, and mouse support — all of which can interact with a terminal multiplexer running underneath it.
+
+### Keybinding collisions
+
+`Ctrl+P` is zellij's default "pane mode" chord, and a `Ctrl+Space` tmux prefix remap (common) would swallow pkm's palette shortcut before pkm ever sees it. Remap the affected action in `:config` → Keybindings (see [Configuration](#configuration)) rather than fighting your multiplexer's config.
+
+### Mouse events
+
+pkm enables mouse reporting, but **tmux does not forward mouse events to the program running inside it by default** — clicks and scroll go to tmux's own pane-select/copy-mode instead, and pkm's mouse support will silently appear broken. Add to `~/.tmux.conf`:
+
+```
+set -g mouse on
+```
+
+zellij forwards mouse events by default; no configuration needed.
+
+### True color
+
+tmux reports `TERM=tmux-256color` / `screen-256color`, which can make some terminal apps under-detect true-color support. If pkm's theme colors look off under tmux, add to `~/.tmux.conf`:
+
+```
+set -ga terminal-overrides ",*256col*:Tc"
+```
+
+### Nested panes
+
+pkm has its own split-pane system (`:split`, `Ctrl+W`, `Ctrl+P`). Running it inside an already-split multiplexer pane works, but nesting splits from both layers at once produces two layers of borders with different meanings. Simplest is to give pkm one multiplexer pane and let it own its own splits.
 
 ---
 
@@ -383,6 +456,7 @@ go test ./...
 | State | Prefix, case-insensitive | Fixed list |
 | Theme | Prefix, case-insensitive | Fixed list |
 | Project name | Prefix, case-insensitive | Active projects in `projects.yaml` |
+| Variable name | Prefix, case-insensitive | `:config` → Variables |
 
 ### All commands at a glance
 
@@ -393,6 +467,7 @@ go test ./...
 | `add project <name>` | — | project | `P` |
 | `new template "Title"` | — | title | — |
 | `insert <name>` | — | template | `T` |
+| `insert var <name>` | — | variable | — |
 | `open <query>` | — | note | `O` / `S` |
 | `move <note> → <state>` | — | note + state | `M` |
 | `archive <note>` | — | note | `A` |
@@ -400,6 +475,8 @@ go test ./...
 | `close` | — | — | — |
 | `theme <name>` | — | theme | — |
 | `config` | — | — | — |
+| `config export [path]` | — | — | — |
+| `config import [path]` | — | — | — |
 | `help` | — | — | `?` |
 | `quit` | `exit` | — | `Ctrl+Q` / `Ctrl+D` |
 

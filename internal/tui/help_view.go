@@ -36,12 +36,15 @@ COMMAND PALETTE  —  press : or Ctrl+Space to open
   :add project <name>       same as :new project (alias)
   :new template "Title"     create a new template note
   :insert <name>            insert a template into the current note
+  :insert var <name>        insert a variable's value at the cursor (edit mode)
   :open <query>             open by title; or full-text search; or #tag filter
   :move <note> → <state>    move note to a state
   :archive <note>           archive a note
   :split [note]             open a new side-by-side pane
   :close                    close the focused pane
-  :config                   open settings
+  :config                   open settings (General / Keybindings / Variables)
+  :config export [path]     write config to file (default .pkm/config-export.yaml)
+  :config import [path]     load config from file
   :quit  /  :exit           quit (session is saved)
   :help                     show this page
 
@@ -86,6 +89,20 @@ TEMPLATE WORKFLOW
     Tag any note with "template" in its frontmatter (or use :new template "Title").
     Press T or type :insert <name> to insert it into the current note.
     Insert templates appear in #templates in the sidebar.
+    {{id}} {{title}} {{created}} {{updated}} and any :config-defined
+    variable are substituted on insertion.
+
+CONFIGURATION  —  :config  (Tab cycles General / Keybindings / Variables)
+  Keybindings section: remaps the global chords (palette, pane picker, next
+  pane, quit, undo, redo, save) that terminal multiplexers like tmux/zellij
+  may otherwise intercept. Enter captures the next ctrl/alt keypress; d
+  resets to default.
+  Variables section: simple key-value pairs used by :insert var <name> and
+  by {{name}} substitution in :insert <template>. Enter adds/edits a value,
+  d deletes.
+  :config export / :config import move a whole config.yaml between vaults;
+  importing an older or newer file never crashes — unknown fields are
+  ignored and missing ones fall back to defaults.
 
 LINKS
   [[Note Title]]              link to another note

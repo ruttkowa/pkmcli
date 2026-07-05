@@ -37,6 +37,8 @@ func (m *Model) handleCommand(raw string) (string, tea.Cmd) {
 			return m.cmdNewProject(parts[2:])
 		case "new template":
 			return m.cmdNewTemplate(parts[2:])
+		case "insert var":
+			return m.cmdInsertVar(parts[2:])
 		}
 	}
 
@@ -181,7 +183,7 @@ func (m *Model) cmdMove(raw string) (string, tea.Cmd) {
 			// so cmdProject can complete the move after the user picks.
 			m.pendingMoveNote = n
 			m.showPalette = true
-			m.palette = newPaletteWithInput("add project ", sortedNotes(m.vault), m.vault.Projects.ActiveNames())
+			m.palette = newPaletteWithInput("add project ", sortedNotes(m.vault), m.vault.Projects.ActiveNames()).withVariables(m.variableNames())
 			return "choose a project to assign this note to", nil
 		}
 		if _, err := m.vault.Projects.EnsureProject(n.Project); err != nil {
@@ -293,10 +295,34 @@ func (m *Model) cmdConfig(args []string) (string, tea.Cmd) {
 		m.configView = newConfigPane(m.cfg)
 		return "", nil
 	}
-	if args[0] == "theme" {
+	switch args[0] {
+	case "theme":
 		return m.cmdTheme(args[1:])
+	case "export":
+		return m.cmdConfigExport(args[1:])
+	case "import":
+		return m.cmdConfigImport(args[1:])
 	}
 	return fmt.Sprintf("unknown config key: %q", args[0]), nil
+}
+
+func (m *Model) cmdConfigExport(args []string) (string, tea.Cmd) {
+	path := strings.Join(args, " ")
+	if err := exportConfig(m.vault, m.cfg, path); err != nil {
+		return fmt.Sprintf("export error: %v", err), nil
+	}
+	return "config exported to " + resolveConfigPath(m.vault, path), nil
+}
+
+func (m *Model) cmdConfigImport(args []string) (string, tea.Cmd) {
+	path := strings.Join(args, " ")
+	cfg, err := importConfig(m.vault, path)
+	if err != nil {
+		return fmt.Sprintf("import error: %v", err), nil
+	}
+	m.applyConfig(cfg)
+	saveConfig(m.vault, m.cfg)
+	return "config imported from " + resolveConfigPath(m.vault, path), nil
 }
 
 // cmdInsert inserts a template note's body into the currently open note. If
@@ -326,8 +352,10 @@ func (m *Model) cmdInsert(args []string) (string, tea.Cmd) {
 	if templateBody == "" {
 		return "template is empty", nil
 	}
+	now := timeNow()
 
 	if sp.activeView == viewEdit {
+		templateBody = m.substituteVariables(templateBody, sp.editor.note, now)
 		current := strings.TrimRight(sp.editor.ta.Value(), "\n\r \t")
 		next := templateBody
 		if current != "" {
@@ -344,6 +372,7 @@ func (m *Model) cmdInsert(args []string) (string, tea.Cmd) {
 		return "no note open", nil
 	}
 	n := sp.viewer.note
+	templateBody = m.substituteVariables(templateBody, n, now)
 	currentBody := strings.TrimRight(n.Body, "\n\r \t")
 	if currentBody == "" {
 		n.Body = templateBody
@@ -358,6 +387,42 @@ func (m *Model) cmdInsert(args []string) (string, tea.Cmd) {
 	l := m.computeLayout()
 	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
 	return "inserted: " + tmpl.Title, nil
+}
+
+// substituteVariables replaces {{name}} placeholders in body: the dynamic
+// built-ins (id/title/created, from n; updated, from now) plus every
+// user-defined variable from config.
+func (m *Model) substituteVariables(body string, n *vault.Note, now time.Time) string {
+	body = strings.ReplaceAll(body, "{{id}}", n.ID)
+	body = strings.ReplaceAll(body, "{{title}}", n.Title)
+	body = strings.ReplaceAll(body, "{{created}}", n.Created.Format("2006-01-02T15:04:05"))
+	body = strings.ReplaceAll(body, "{{updated}}", now.Format("2006-01-02T15:04:05"))
+	for name, value := range m.cfg.Variables {
+		body = strings.ReplaceAll(body, "{{"+name+"}}", value)
+	}
+	return body
+}
+
+// cmdInsertVar inserts a configured variable's value at the cursor in the
+// live editor buffer. Unlike :insert <template>, this only makes sense
+// mid-edit — there's no "append to a read-only note" analog for a single value.
+func (m *Model) cmdInsertVar(args []string) (string, tea.Cmd) {
+	if len(args) == 0 {
+		return "usage: :insert var <variable>", nil
+	}
+	name := strings.Join(args, " ")
+	val, ok := m.cfg.Variables[name]
+	if !ok {
+		return fmt.Sprintf("unknown variable: %q", name), nil
+	}
+	sp := &m.splits[m.activeSplit]
+	if sp.activeView != viewEdit {
+		return "insert var only works while editing (press e first)", nil
+	}
+	sp.editor.ta.InsertString(val)
+	sp.editor.wordCount = countWords(sp.editor.ta.Value())
+	sp.editor = sp.editor.refreshLinkSuggest()
+	return "inserted variable: " + name, nil
 }
 
 // cmdNewTemplate creates a new note pre-tagged as a template.

@@ -23,6 +23,7 @@ const (
 	slotTheme             // dark|light
 	slotArrow             // gateway "→" — separates slots, not user content
 	slotProject           // project name, prefix-matched from active projects
+	slotVariable          // user-defined {{var}} name, from config
 )
 
 // cmdDef is the authoritative grammar entry for one command.
@@ -61,6 +62,11 @@ var allCommands = []cmdDef{
 		slots:   []slotKind{slotTemplate},
 	},
 	{
+		name: "insert var", sig: "<variable>", desc: "Insert a variable's value at the cursor (edit mode only)",
+		example: `:insert var author`,
+		slots:   []slotKind{slotVariable},
+	},
+	{
 		name: "open", sig: "<note · query · #tag>", desc: "Open by title, search content, or filter by tag",
 		example: `:open docker  or  :open #linux`,
 		slots:   []slotKind{slotNote},
@@ -93,8 +99,8 @@ var allCommands = []cmdDef{
 		slots:   []slotKind{slotTheme},
 	},
 	{
-		name: "config", sig: "theme dark·light", desc: "Open config menu or set a value",
-		example: `:config theme dark`,
+		name: "config", sig: "[theme|export|import] ...", desc: "Open config menu, or set/export/import config",
+		example: `:config export`,
 		slots:   []slotKind{slotNone},
 	},
 	{
@@ -138,7 +144,14 @@ type paletteModel struct {
 	cancelled    bool
 	notes        []*vault.Note // pre-sorted by Updated desc for note completions
 	projectNames []string      // active project names for slotProject autosuggest
+	varNames     []string      // configured variable names for slotVariable autosuggest
 	verbCtx      verbContext   // biases verb-suggestion order; zero value = declaration order
+}
+
+// withVariables sets the variable names available for :insert var autosuggest.
+func (p paletteModel) withVariables(names []string) paletteModel {
+	p.varNames = names
+	return p
 }
 
 // verbContext describes why the palette was opened, so the verb list can be
@@ -307,6 +320,8 @@ func (p paletteModel) contextSuggestions() []ctxSuggestion {
 		return p.themeSuggestions(strings.TrimSpace(p.inputAfterVerb()))
 	case slotProject:
 		return p.projectSuggestions(strings.TrimSpace(p.inputAfterVerb()))
+	case slotVariable:
+		return p.variableSuggestions(strings.TrimSpace(p.inputAfterVerb()))
 	}
 	return nil
 }
@@ -383,6 +398,20 @@ func (p paletteModel) themeSuggestions(fragment string) []ctxSuggestion {
 	for _, s := range all {
 		if strings.HasPrefix(s.cmd, fl) {
 			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func (p paletteModel) variableSuggestions(fragment string) []ctxSuggestion {
+	fl := strings.ToLower(fragment)
+	var out []ctxSuggestion
+	for _, name := range p.varNames {
+		if fl == "" || strings.HasPrefix(strings.ToLower(name), fl) {
+			out = append(out, ctxSuggestion{cmd: name, desc: "variable"})
+			if len(out) >= maxContextRows {
+				break
+			}
 		}
 	}
 	return out
@@ -532,7 +561,7 @@ func (p paletteModel) tabComplete() paletteModel {
 		}
 	case slotState:
 		p.input = def.name + " " + p.currentNoteFragment() + " → " + chosen
-	case slotTheme, slotProject:
+	case slotTheme, slotProject, slotVariable:
 		p.input = def.name + " " + chosen
 	}
 	p.selected = 0

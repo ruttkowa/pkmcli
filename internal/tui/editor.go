@@ -47,6 +47,7 @@ type editPane struct {
 
 	notes         []*vault.Note // for link autocomplete
 	contentHeight int
+	saveKey       string // configured key that commits the draft (default "ctrl+s")
 	// link suggestion state
 	linkSuggestActive bool
 	linkSuggestFrag   string
@@ -54,7 +55,7 @@ type editPane struct {
 	linkSuggestList   []string
 }
 
-func newEditPane(n *vault.Note, width, height int, notes []*vault.Note, lineNumbers bool) (editPane, tea.Cmd) {
+func newEditPane(n *vault.Note, width, height int, notes []*vault.Note, lineNumbers bool, saveKey string) (editPane, tea.Cmd) {
 	si := 0
 	for i, s := range vault.AllStates {
 		if s == n.State {
@@ -103,6 +104,7 @@ func newEditPane(n *vault.Note, width, height int, notes []*vault.Note, lineNumb
 		wordCount:     countWords(n.Body),
 		notes:         notes,
 		contentHeight: height,
+		saveKey:       saveKey,
 	}, focusCmd
 }
 
@@ -189,7 +191,7 @@ func (e editPane) update(msg tea.Msg) (editPane, tea.Cmd) {
 		}
 
 		switch km.String() {
-		case "ctrl+s":
+		case e.saveKey:
 			e.saved = true
 			return e, nil
 		case "esc":

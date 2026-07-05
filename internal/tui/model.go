@@ -290,9 +290,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// live editor (draft untouched) — the only way to reach it while
 				// editing, since a bare ":" must stay a literal character in note
 				// bodies. See the showPalette branch above for what runs on submit.
-				if msg.String() == "ctrl+@" {
+				if msg.String() == m.cfg.Keymap.Palette {
 					m.showPalette = true
-					m.palette = newPalette(sortedNotes(m.vault), m.vault.Projects.ActiveNames()).withContext(ctxEditing)
+					m.palette = newPalette(sortedNotes(m.vault), m.vault.Projects.ActiveNames()).withVariables(m.variableNames()).withContext(ctxEditing)
 					m.resizeOpenEditors(m.computeLayout())
 					return m, nil
 				}
@@ -320,21 +320,48 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showConfig {
 			switch msg.String() {
 			case "esc":
+				if nv, consumed := m.configView.cancelInPlace(); consumed {
+					m.configView = nv
+					return m, nil
+				}
 				m.showConfig = false
+				m.cfg.Keymap = sliceToKeymap(m.configView.kbKeys)
+				m.cfg.Variables = m.configView.variablesMap()
 				saveConfig(m.vault, m.cfg)
 				// Treat config-close like a resize: rerender all viewers at
 				// potentially new layout (sidebar width) and theme.
 				m.resizeOpenEditors(m.computeLayout())
-			case "j", "down":
-				m.configView = m.configView.moveCursor(1)
-			case "k", "up":
-				m.configView = m.configView.moveCursor(-1)
-			case "left", "h":
-				m.configView = m.configView.changeValue(-1)
-				m.applyConfigItem(m.configView.cursor, m.configView.values[m.configView.cursor])
-			case "right", "l", "enter":
-				m.configView = m.configView.changeValue(1)
-				m.applyConfigItem(m.configView.cursor, m.configView.values[m.configView.cursor])
+				return m, nil
+			case "tab":
+				if !m.configView.busy() {
+					m.configView = m.configView.nextSection()
+				}
+				return m, nil
+			case "shift+tab":
+				if !m.configView.busy() {
+					m.configView = m.configView.prevSection()
+				}
+				return m, nil
+			}
+
+			switch m.configView.section {
+			case secKeybindings:
+				m.configView = m.configView.updateKeybindings(msg)
+			case secVariables:
+				m.configView = m.configView.updateVariables(msg)
+			default:
+				switch msg.String() {
+				case "j", "down":
+					m.configView = m.configView.moveCursor(1)
+				case "k", "up":
+					m.configView = m.configView.moveCursor(-1)
+				case "left", "h":
+					m.configView = m.configView.changeValue(-1)
+					m.applyConfigItem(m.configView.cursor, m.configView.values[m.configView.cursor])
+				case "right", "l", "enter":
+					m.configView = m.configView.changeValue(1)
+					m.applyConfigItem(m.configView.cursor, m.configView.values[m.configView.cursor])
+				}
 			}
 			return m, nil
 		}
@@ -352,7 +379,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.pickerIdx < len(m.splits) {
 					m.pickerIdx++
 				}
-			case "enter", "ctrl+p":
+			case "enter", m.cfg.Keymap.PanePicker:
 				m.applyPickerSelection()
 				m.panePicker = false
 			case "esc":
@@ -362,28 +389,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "ctrl+q", "ctrl+d":
+		case m.cfg.Keymap.Quit, "ctrl+d":
 			saveSession(m.vault, &m)
 			return m, tea.Quit
 
-		case "ctrl+z":
+		case m.cfg.Keymap.Undo:
 			m.handleUndo()
 			return m, nil
 
-		case "ctrl+y":
+		case m.cfg.Keymap.Redo:
 			m.handleRedo()
 			return m, nil
 
-		case ":", "ctrl+@": // ctrl+@ is how terminals report Ctrl+Space
+		case ":", m.cfg.Keymap.Palette:
 			m.showPalette = true
 			ctx := ctxDefault
 			if len(m.splits) > 0 && m.splits[m.activeSplit].activeView == viewNote {
 				ctx = ctxNoteOpen
 			}
-			m.palette = newPalette(sortedNotes(m.vault), m.vault.Projects.ActiveNames()).withContext(ctx)
+			m.palette = newPalette(sortedNotes(m.vault), m.vault.Projects.ActiveNames()).withVariables(m.variableNames()).withContext(ctx)
 			return m, nil
 
-		case "ctrl+p":
+		case m.cfg.Keymap.PanePicker:
 			m.panePicker = true
 			if m.activePane == paneSidebar {
 				m.pickerIdx = 0
@@ -405,12 +432,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "N":
 			m.showPalette = true
-			m.palette = newPaletteWithInput("new ", sortedNotes(m.vault), m.vault.Projects.ActiveNames())
+			m.palette = newPaletteWithInput("new ", sortedNotes(m.vault), m.vault.Projects.ActiveNames()).withVariables(m.variableNames())
 			return m, nil
 
 		case "O", "S":
 			m.showPalette = true
-			m.palette = newPaletteWithInput("open ", sortedNotes(m.vault), m.vault.Projects.ActiveNames())
+			m.palette = newPaletteWithInput("open ", sortedNotes(m.vault), m.vault.Projects.ActiveNames()).withVariables(m.variableNames())
 			return m, nil
 
 		case "A":
@@ -419,7 +446,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if n := m.splits[m.activeSplit].viewer.note; m.splits[m.activeSplit].activeView == viewNote && n != nil {
 				input += n.Title
 			}
-			m.palette = newPaletteWithInput(input, sortedNotes(m.vault), m.vault.Projects.ActiveNames())
+			m.palette = newPaletteWithInput(input, sortedNotes(m.vault), m.vault.Projects.ActiveNames()).withVariables(m.variableNames())
 			return m, nil
 
 		case "M":
@@ -428,17 +455,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if n := m.splits[m.activeSplit].viewer.note; m.splits[m.activeSplit].activeView == viewNote && n != nil {
 				input += n.Title + " → "
 			}
-			m.palette = newPaletteWithInput(input, sortedNotes(m.vault), m.vault.Projects.ActiveNames())
+			m.palette = newPaletteWithInput(input, sortedNotes(m.vault), m.vault.Projects.ActiveNames()).withVariables(m.variableNames())
 			return m, nil
 
 		case "T":
 			m.showPalette = true
-			m.palette = newPaletteWithInput("insert ", sortedNotes(m.vault), m.vault.Projects.ActiveNames())
+			m.palette = newPaletteWithInput("insert ", sortedNotes(m.vault), m.vault.Projects.ActiveNames()).withVariables(m.variableNames())
 			return m, nil
 
 		case "P":
 			m.showPalette = true
-			m.palette = newPaletteWithInput("add project ", sortedNotes(m.vault), m.vault.Projects.ActiveNames())
+			m.palette = newPaletteWithInput("add project ", sortedNotes(m.vault), m.vault.Projects.ActiveNames()).withVariables(m.variableNames())
 			return m, nil
 
 		case "e":
@@ -446,7 +473,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if sp.activeView == viewNote && sp.viewer.note != nil {
 				l := m.computeLayout()
 				var cmd tea.Cmd
-				sp.editor, cmd = newEditPane(sp.viewer.note, l.paneWidth, l.contentHeight, sortedNotes(m.vault), m.cfg.LineNumbers)
+				sp.editor, cmd = newEditPane(sp.viewer.note, l.paneWidth, l.contentHeight, sortedNotes(m.vault), m.cfg.LineNumbers, m.cfg.Keymap.Save)
 				sp.activeView = viewEdit
 				m.activePane = paneMain
 				return m, cmd
@@ -459,7 +486,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.activePane = paneMain
 			}
 
-		case "ctrl+w":
+		case m.cfg.Keymap.NextPane:
 			if len(m.splits) > 1 {
 				m.activeSplit = (m.activeSplit + 1) % len(m.splits)
 				m.activePane = paneMain
@@ -643,6 +670,25 @@ func (m *Model) applyConfigItem(itemIdx, valueIdx int) {
 	case cfgItemLineNumbers:
 		m.cfg.LineNumbers = valueIdx == 0
 	}
+}
+
+// applyConfig replaces the running config wholesale (used by :config import)
+// and re-applies every side effect a piecemeal change would normally trigger:
+// active theme, cached renders, and the config overlay if it's open.
+func (m *Model) applyConfig(cfg AppConfig) {
+	m.cfg = cfg
+	activeTheme = NordTheme
+	for _, t := range ThemeChoices {
+		if t.Name == cfg.Theme {
+			activeTheme = t
+			break
+		}
+	}
+	m.bustViewerCaches()
+	if m.showConfig {
+		m.configView = newConfigPane(m.cfg)
+	}
+	m.resizeOpenEditors(m.computeLayout())
 }
 
 func (m *Model) bustViewerCaches() {
@@ -1009,6 +1055,24 @@ func (m Model) renderBreadcrumb() string {
 		Render(content)
 }
 
+// keyChipLabel renders a bubbletea key string (e.g. "ctrl+p") as a short
+// display label (e.g. "^P") for the tooltip bar, reflecting whatever the
+// user has remapped it to.
+func keyChipLabel(key string) string {
+	switch {
+	case strings.HasPrefix(key, "ctrl+"):
+		rest := strings.TrimPrefix(key, "ctrl+")
+		if rest == "@" {
+			rest = "Space"
+		}
+		return "^" + strings.ToUpper(rest)
+	case strings.HasPrefix(key, "alt+"):
+		return "M-" + strings.ToUpper(strings.TrimPrefix(key, "alt+"))
+	default:
+		return key
+	}
+}
+
 func (m Model) renderTooltipBar() string {
 	chip := func(key, action string) string {
 		k := lipgloss.NewStyle().
@@ -1037,7 +1101,7 @@ func (m Model) renderTooltipBar() string {
 
 	// Config overlay: show config-specific hints.
 	if m.showConfig {
-		bar := strings.Join([]string{chip("↑↓", "select"), chip("←→", "change"), chip("Esc", "save & close")}, " ")
+		bar := strings.Join([]string{chip("↑↓", "select"), chip("←→", "change"), chip("Tab", "section"), chip("Esc", "save & close")}, " ")
 		return lipgloss.NewStyle().Width(m.width).Background(activeTheme.StatusBg).Render(bar)
 	}
 
@@ -1058,7 +1122,7 @@ func (m Model) renderTooltipBar() string {
 
 	// Edit mode: show edit-specific hints.
 	if m.activePane == paneMain && len(m.splits) > 0 && m.splits[m.activeSplit].activeView == viewEdit {
-		bar := strings.Join([]string{chip("^S", "save"), chip("^Space", "command"), chip("Tab", "cycle fields"), chip("Esc", "cancel"), chip("^C", "quit")}, " ")
+		bar := strings.Join([]string{chip(keyChipLabel(m.cfg.Keymap.Save), "save"), chip(keyChipLabel(m.cfg.Keymap.Palette), "command"), chip("Tab", "cycle fields"), chip("Esc", "cancel"), chip("^C", "quit")}, " ")
 		return lipgloss.NewStyle().Width(m.width).Background(activeTheme.StatusBg).Render(bar)
 	}
 
@@ -1078,15 +1142,15 @@ func (m Model) renderTooltipBar() string {
 		chip("P", "add project"),
 	}, " ")
 
-	ctrlParts := []string{chip("P", "panes"), chip("Q", "quit")}
+	ctrlParts := []string{chip(keyChipLabel(m.cfg.Keymap.PanePicker), "panes"), chip(keyChipLabel(m.cfg.Keymap.Quit), "quit")}
 	if len(m.splits) > 1 {
-		ctrlParts = append(ctrlParts, chip("W", "next pane"))
+		ctrlParts = append(ctrlParts, chip(keyChipLabel(m.cfg.Keymap.NextPane), "next pane"))
 	}
 	if len(m.undoStack) > 0 {
-		ctrlParts = append(ctrlParts, chip("Z", "undo"))
+		ctrlParts = append(ctrlParts, chip(keyChipLabel(m.cfg.Keymap.Undo), "undo"))
 	}
 	if len(m.redoStack) > 0 {
-		ctrlParts = append(ctrlParts, chip("Y", "redo"))
+		ctrlParts = append(ctrlParts, chip(keyChipLabel(m.cfg.Keymap.Redo), "redo"))
 	}
 	ctrlChips := strings.Join(ctrlParts, " ")
 
@@ -1186,6 +1250,16 @@ func (m *Model) handleRedo() {
 	}
 	m.undoStack = append(m.undoStack, rec)
 	m.statusMsg = "redone"
+}
+
+// variableNames returns the configured variable names, sorted, for palette autosuggest.
+func (m *Model) variableNames() []string {
+	names := make([]string, 0, len(m.cfg.Variables))
+	for name := range m.cfg.Variables {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func buildTitleSet(v *vault.Vault) map[string]bool {
