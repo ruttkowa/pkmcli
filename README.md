@@ -4,8 +4,25 @@ A terminal-based Personal Knowledge Management tool — navigate, organize, and 
 
 - **Local-first** — plain `.md` files, no lock-in
 - **Keyboard-first** — everything reachable without a mouse
-- **Not an editor** — writing delegates to your preferred external editor (nvim, vim, helix, …)
+- **Not an editor** — writing delegates to your preferred external editor (nvim, vim, helix, …)... except for the built-in inline editor (`e`), which handles day-to-day edits without leaving the app
 - **No AI, no sync, no cloud**
+
+## Contents
+
+- [Quick start](#quick-start)
+- [Layout](#layout)
+- [Reference: modes, hotkeys & commands](#reference-modes-hotkeys--commands) — the definitive list of every key and every `:command`
+- [Knowledge model](#knowledge-model)
+- [Projects workflow](#projects-workflow)
+- [Templates](#templates)
+- [Note format](#note-format)
+- [Links](#links)
+- [Vault structure](#vault-structure)
+- [Configuration](#configuration)
+- [File watcher](#file-watcher)
+- [Running under tmux / zellij](#running-under-tmux--zellij)
+- [Running tests](#running-tests)
+- [Developer reference (CLI standards)](#developer-reference-cli-standards)
 
 ---
 
@@ -16,7 +33,7 @@ go build -o pkm ./cmd/pkm
 ./pkm [path/to/vault]
 ```
 
-On first run the vault directory is created automatically. Omit the path to be prompted.
+On first run the vault directory is created automatically. Omit the path to be prompted. Once it's open, press `?` for in-app help at any time — it mirrors the reference below.
 
 ---
 
@@ -45,107 +62,209 @@ On first run the vault directory is created automatically. Omit the path to be p
 └───────────────────────────────────────────────────────────────────────┘
 ```
 
+`Tab` toggles focus between the two panes. The main pane shows one of several views depending on context (note list, note viewer, editor, project detail, help, config) — `:split` opens more of them side by side.
+
 ---
 
-## Navigation
+## Reference: modes, hotkeys & commands
 
-### Focus & panes
+This is the complete, ground-truth list of every keybinding and `:command` — everything below is current as of this README, not aspirational.
+
+### How modes capture input
+
+pkm doesn't have a named `Mode` enum, but input already branches by context. Five overlays capture **every** keystroke while active — global shortcuts (`N`/`O`/`A`/`M`/`T`/`P`/`?`/`:`/Tab/etc.) are blocked from leaking through, so typing normally inside them never gets hijacked:
+
+| Overlay | Entered via | Exits via |
+|---|---|---|
+| Command Palette | `:` or the Palette key (default `Ctrl+Space`) | `Enter` (run) / `Esc` (cancel) |
+| Editor | `e` on an open note | `Ctrl+S` (save) / `Esc` (discard) |
+| Project Detail — bridge entry | `e` / `i` inside Project Detail | `Enter` (submit) / `Esc` (cancel) |
+| Config overlay | `:config` | `Esc` (save & close) |
+| Pane picker | the Pane picker key (default `Ctrl+P`) | `Enter` (confirm) / `Esc` (cancel) |
+
+Everywhere else — Sidebar, Note List, Note Viewer, Help — has no free-text field to protect, so global shortcuts intentionally pass through.
+
+Two rules apply everywhere, in every mode:
+
+- **`Ctrl+C` is always rewritten to `Esc`** before any mode sees it — it cancels/closes, it never quits the app.
+- **Quitting only happens via** the Quit key (default `Ctrl+Q`), `Ctrl+D`, or `:quit`/`:exit`.
+
+`Ctrl+Space`, `Ctrl+P`, `Ctrl+W`, `Ctrl+Q`, `Ctrl+Z`, `Ctrl+Y`, and `Ctrl+S` below are **defaults** — every one of them is remappable in [`:config` → Keybindings](#config-overlay) if it collides with your terminal multiplexer's own prefix (see [Running under tmux / zellij](#running-under-tmux--zellij)).
+
+### Global
+
+Active whenever no overlay above has captured input.
 
 | Key | Action |
-|-----|--------|
+|---|---|
+| `:` or **Palette** (`Ctrl+Space`) | Open the command palette |
+| `?` | Toggle the Help view |
 | `Tab` | Switch focus: Sidebar ↔ Main pane |
-| `Ctrl+W` | Cycle to next split pane |
-| `Ctrl+P` | Open pane picker |
+| **Pane picker** (`Ctrl+P`) | Open the pane picker |
+| **Next pane** (`Ctrl+W`) | Cycle to the next split (only shown once you have >1) |
+| **Undo** (`Ctrl+Z`) | Undo the last note save |
+| **Redo** (`Ctrl+Y`) | Redo |
+| **Quit** (`Ctrl+Q`), `Ctrl+D` | Save session and quit |
+| `e` | Open the currently-viewed note in the editor |
+| `N` | Palette prefilled `new ` |
+| `O` / `S` | Palette prefilled `open ` |
+| `A` | Palette prefilled `archive ` (+ current note title, if one is open) |
+| `M` | Palette prefilled `move ` (+ `<title> → `, if one is open) |
+| `T` | Palette prefilled `insert ` (template insert) |
+| `P` | Palette prefilled `add project ` |
 
-### Sidebar movement
+Mouse: left-click is supported throughout (sidebar items, note-list rows, `[[links]]` in the viewer). There's no scroll-wheel support anywhere yet — use `j`/`k`.
+
+### Sidebar
 
 | Key | Action |
-|-----|--------|
-| `j` / `↓` | Move cursor down |
-| `k` / `↑` | Move cursor up |
-| `Enter` | Open note / toggle section |
-| `→` | Expand section or project folder |
-| `←` | Collapse section or project folder |
+|---|---|
+| `j` / `↓` | Cursor down |
+| `k` / `↑` | Cursor up |
+| `→` | Expand section / project folder |
+| `←` | Collapse section / project folder |
+| `Enter` | Open note, or toggle a project/section and show its detail/landing page |
 
-### In the main pane (viewer)
+### Note List
+
+The note-list view (search results, section browsing).
 
 | Key | Action |
-|-----|--------|
+|---|---|
+| `j` / `↓` | Cursor down |
+| `k` / `↑` | Cursor up |
+| `Enter` | Open the highlighted note |
+
+### Note Viewer
+
+| Key | Action |
+|---|---|
 | `j` / `↓` | Scroll down |
 | `k` / `↑` | Scroll up |
-| `[` / `Alt+←` | Navigate back in pane history |
-| `]` / `Alt+→` | Navigate forward |
-| `Esc` / `Backspace` | Go back to the note list |
+| `[` / `Alt+←` | Back in this pane's note history |
+| `]` / `Alt+→` | Forward in pane history |
+| `Esc` / `Backspace` | Back (pops history; returns to the note list once history is empty) |
+| Click a `[[link]]` | Open it — creates the note first if it doesn't exist yet |
 
----
+### Editor
 
-## Commands
+Opened with `e`. Captures all input — the only thing that reaches it from outside is the **Palette** key, which opens the palette as a live overlay on top of your still-open draft (see [Templates](#templates) for what `:insert` does there).
 
-Press `:` to open the command palette. A fuzzy dropdown appears as you type. `Ctrl+Space` also opens it, and additionally works from inside the editor — a bare `:` has to stay a literal character while editing. Opened this way, the editor keeps running underneath: `:insert` writes the template straight into the open note and you stay in the editor; any other command (`:archive`, `:move`, …) saves the draft first, then runs normally and exits to the viewer, so it can never act on stale content. The palette's default verb order shifts a little based on where you opened it from — e.g. opening it from the editor puts `:insert` first.
+| Key | Action |
+|---|---|
+| **Save** (`Ctrl+S`) | Commit the draft and return to the viewer |
+| `Esc` | Discard changes and return to the viewer |
+| `Tab` / `Shift+Tab` | Cycle focus: State → Tags → Project → Body |
+| `←`/`h`, `→`/`l`/`Enter` | Cycle value (State field only) |
 
-| Control | Action |
-|---------|--------|
-| `↑` / `↓` | Navigate suggestions |
-| `Tab` | Complete highlighted item |
-| `Enter` | Run the command |
+In the body field:
+
+| Key | Action |
+|---|---|
+| `[`, `(`, `` ` `` | Auto-pairs `[]`, `()`, `` `` `` with the cursor placed between |
+| `]`, `)`, `` ` `` | Skips over the matching closer if the cursor is right before one |
+| `Enter` | Continues `- `, `- [ ] `/`- [x] `, `* `, and numbered (`1.` → `2.`) lists |
+
+Typing inside an unclosed `[[fragment]]` opens a link-autosuggest dropdown:
+
+| Key | Action |
+|---|---|
+| `↑`/`↓` or `Ctrl+P`/`Ctrl+N` | Move selection |
+| `Tab` / `Enter` | Accept the highlighted suggestion |
+| `Esc` | Dismiss suggestions only — the editor itself stays open |
+
+### Project Detail
+
+Browsing a project's attached notes and history:
+
+| Key | Action |
+|---|---|
+| `j` / `↓`, `k` / `↑` | Scroll |
+| `e` / `i` | Start a Hemingway-bridge journal entry |
+
+Composing a bridge entry (captures all input until submitted or cancelled):
+
+| Key | Action |
+|---|---|
+| `Enter` | Submit (ignored if the entry is blank) |
+| `Esc` | Cancel, discard the draft entry |
+| `Backspace` / `Ctrl+H` | Delete last character |
+| `Ctrl+U` | Clear the line |
+
+### Config Overlay
+
+Opened with `:config`. `Tab` / `Shift+Tab` cycle its three tabs; `Esc` saves everything and closes, from any tab (while capturing a keybind or editing a variable, `Esc` cancels just that instead — see below).
+
+**General** — `↑`/`↓` selects a setting, `←`/`→` cycles its value.
+
+**Keybindings** — `↑`/`↓` selects an action, `Enter` starts capture ("press ctrl/alt + a key…"), `d` resets that action to its default. Only `Ctrl`/`Alt` chords are accepted while capturing, so you can't accidentally shadow a plain letter used elsewhere.
+
+**Variables** — `↑`/`↓` selects a variable (or the **+ Add variable** row), `Enter` adds a new one or edits an existing value, `d` deletes.
+
+### Pane Picker
+
+Opened with the **Pane picker** key (`Ctrl+P` by default).
+
+| Key | Action |
+|---|---|
+| `←`/`h`, `→`/`l` | Move selection (index 0 = Sidebar, 1..n = each split) |
+| `Enter` or the Pane picker key again | Confirm |
 | `Esc` | Cancel |
+
+### Help View
+
+Opened with `?`.
+
+| Key | Action |
+|---|---|
+| `j` / `↓`, `k` / `↑` | Scroll |
+| `g` / `G` | Jump to top / bottom |
+| `Esc` / `Backspace` / `?` | Close |
+
+### Command Palette
+
+Opened with `:` or the **Palette** key.
+
+| Key | Action |
+|---|---|
+| `↑`/`↓` or `Ctrl+P`/`Ctrl+N` | Navigate suggestions |
+| `Tab` / `→` | Complete the highlighted suggestion |
+| `Enter` | Run whatever text is currently typed (not necessarily the highlighted row) |
+| `Esc` | Cancel |
+| `Backspace` / `Ctrl+H` | Delete last character |
+| `Ctrl+U` | Clear the line |
+
+The verb list reorders a little depending on where you opened it from — e.g. opening it from the editor puts `:insert` first, since that's what you're almost always about to do mid-edit.
 
 ### All commands
 
-| Command | What it does |
-|---------|-------------|
-| `:new "Title"` | Create a note in Inbox |
-| `:new project <name>` | Assign the open note to a project (moves to Projects) |
-| `:add project <name>` | Alias for `:new project` |
-| `:new template "Title"` | Create a new template note (auto-tagged) |
-| `:insert <name>` | Insert a template into the open note |
-| `:insert var <name>` | Insert a variable's value at the cursor (edit mode only) |
-| `:open <query>` | Open a note by title, content search, or `#tag` filter |
-| `:move <note> → <state>` | Move a note to a state |
-| `:archive <note>` | Move a note to Archive |
-| `:split [note]` | Open a side-by-side pane |
-| `:close` | Close the focused pane |
-| `:config` | Open settings menu |
-| `:config export [path]` | Write config to a file (default `.pkm/config-export.yaml`) |
-| `:config import [path]` | Load config from a file |
-| `:help` | Open the help view |
-| `:quit` / `:exit` | Save session and quit |
+| Command | What it does | Shift shortcut |
+|---|---|---|
+| `:new "Title"` | Create a note in Inbox | `N` |
+| `:new project <name>` | Create a new project — does **not** assign the open note (max 4 active) | — |
+| `:add project <name>` | Assign the open note to a project, creating it if it doesn't exist yet; moves the note to Projects | `P` |
+| `:new template "Title"` | Create a new note pre-tagged `template` | — |
+| `:insert <name>` | Insert a template into the open note | `T` |
+| `:insert var <name>` | Insert a variable's value at the cursor — edit mode only | — |
+| `:open <query>` | Open by title; else full-text search; `#tag` filters by tag | `O` / `S` |
+| `:move <note> → <state>` | Move a note to a state (`->` also accepted) | `M` |
+| `:archive <note>` | Shortcut for `:move <note> → archive` | `A` |
+| `:split [note]` | Open a new side-by-side pane, optionally pre-loaded | — |
+| `:close` | Close the focused pane (blocked if it's the last one) | — |
+| `:theme <name>` | `nord` · `solarized` · `dracula` · `gruvbox` · `tokyonight` | — |
+| `:config` | Open the settings overlay | — |
+| `:config theme <name>` | Set the theme directly, without opening the overlay | — |
+| `:config export [path]` | Write config to a file (default `.pkm/config-export.yaml`) | — |
+| `:config import [path]` | Load config from a file | — |
+| `:help` | Open the help view | `?` |
+| `:quit` / `:exit` | Save session and quit | — |
 
-**`:open` resolution:** exact title match → opens directly · no match → full-text search → shows list · `#tag` prefix → tag filter
+> [!NOTE]
+> `:new project` and `:add project` are **not** aliases of each other, despite the similar names: `new project` only creates the project; `add project` is what actually attaches your currently-open note to one.
 
-**Valid states for `:move`:**
+**`:open` resolution:** exact title match → opens directly · no match → full-text search → shows a result list · `#tag` prefix → tag filter.
 
-```
-inbox   projects   areas   research   archive
-```
-
----
-
-## Shortcuts
-
-`Ctrl+W`, `Ctrl+P`, `Ctrl+Q`, `Ctrl+Z`, `Ctrl+Y`, `Ctrl+S`, and `Ctrl+Space` below are defaults — remap any of them in `:config` → Keybindings if they collide with your terminal multiplexer.
-
-### Shift shortcuts — open palette pre-filled
-
-| Key | Pre-fills | What it does |
-|-----|-----------|-------------|
-| `N` | `:new ` | Create a note |
-| `O` or `S` | `:open ` | Open / search |
-| `A` | `:archive ` | Archive a note |
-| `M` | `:move ` | Move to a state |
-| `T` | `:insert ` | Insert a template |
-| `P` | `:add project ` | Assign to a project |
-
-### Other keys
-
-| Key | Action |
-|-----|--------|
-| `?` | Open / close help view |
-| `e` | Open current note in the editor |
-| `Ctrl+C` | Cancel / close (same as Esc) |
-| `Ctrl+Z` | Undo last note save |
-| `Ctrl+Y` | Redo |
-| `Ctrl+Q` / `Ctrl+D` | Save session and quit |
+**Valid states for `:move`:** `inbox` · `projects` · `areas` · `research` · `archive`
 
 ---
 
@@ -198,16 +317,9 @@ Step 3 — the note appears under its project in the sidebar
     · Landing Page    ← click to open in main pane
 ```
 
-| Key / Action | Effect |
-|-------------|--------|
-| `Enter` on project folder | Toggle expand/collapse + open detail |
-| `→` on collapsed folder | Expand + load notes |
-| `←` on expanded folder | Collapse |
-| Click note under project | Open in main pane |
-
 ### Project detail page
 
-Select a project folder header to open its detail page:
+Select a project folder header to open its detail page (see [Project Detail](#project-detail) above for keys):
 
 - List of attached notes (clickable)
 - History log — every attach/detach event with timestamp
@@ -253,6 +365,8 @@ Insert templates appear in **#templates** in the sidebar.
 
 `{{id}}`, `{{title}}`, `{{created}}`, `{{updated}}`, and any variable defined
 in `:config` → Variables are all substituted when the template is inserted.
+Insert a single variable on its own with `:insert var <name>` — see
+[All commands](#all-commands).
 
 ---
 
@@ -293,37 +407,6 @@ Note body here. [[Wikilinks]] are supported.
 
 ---
 
-## Editor
-
-Press `e` to open the current note in the built-in inline editor.
-
-| Key | Action |
-|-----|--------|
-| `Tab` | Cycle between fields (title, tags, body) |
-| `Ctrl+S` | Save |
-| `Ctrl+Space` | Open the command palette without leaving the editor |
-| `Esc` | Cancel (discard changes) |
-
----
-
-## Split panes
-
-Open notes side by side:
-
-```
-:split [note]
-```
-
-| Key | Action |
-|-----|--------|
-| `Ctrl+W` | Cycle focus between panes |
-| `Ctrl+P` | Open pane picker |
-| `:close` | Close the focused pane |
-
-Each pane has its own navigation history (`[` / `]` to go back/forward).
-
----
-
 ## Vault structure
 
 ```
@@ -342,11 +425,9 @@ No content-based folder hierarchy — organization is through metadata, tags, an
 
 ## Configuration
 
-Open the config menu with `:config`. It has three tabs — cycle with `Tab` / `Shift+Tab` — and `Esc` saves and closes from any of them.
+Open the config menu with `:config` (see [Config Overlay](#config-overlay) for the exact keys). It has three tabs — cycle with `Tab` / `Shift+Tab` — and `Esc` saves and closes from any of them.
 
 ### General
-
-Navigate with `↑↓`, change values with `←→`.
 
 | Setting | Options | Default |
 |---------|---------|---------|
@@ -371,11 +452,11 @@ Remaps the global chords most likely to collide with a terminal multiplexer's ow
 | Redo | `Ctrl+Y` |
 | Save (editor) | `Ctrl+S` |
 
-`↑↓` selects, `Enter` captures the next keypress as the new binding, `d` resets the selected action to its default. Only `Ctrl`/`Alt` chords are accepted — a bare letter would silently shadow navigation elsewhere. Mode-internal keys (arrows, `hjkl`, etc.) aren't remappable.
+Mode-internal keys (arrows, `hjkl`, etc.) aren't remappable — only these seven global chords are.
 
 ### Variables
 
-Simple key-value pairs used by `:insert var <name>` and by `{{name}}` substitution in `:insert <template>`. `↑↓` selects, `Enter` on an existing row edits its value, `Enter` on **+ Add variable** creates one, `d` deletes.
+Simple key-value pairs used by `:insert var <name>` and by `{{name}}` substitution in `:insert <template>`.
 
 ### Export / import
 
@@ -400,7 +481,7 @@ pkm hardcodes a handful of global chords, its own split-pane system, and mouse s
 
 ### Keybinding collisions
 
-`Ctrl+P` is zellij's default "pane mode" chord, and a `Ctrl+Space` tmux prefix remap (common) would swallow pkm's palette shortcut before pkm ever sees it. Remap the affected action in `:config` → Keybindings (see [Configuration](#configuration)) rather than fighting your multiplexer's config.
+`Ctrl+P` is zellij's default "pane mode" chord, and a `Ctrl+Space` tmux prefix remap (common) would swallow pkm's palette shortcut before pkm ever sees it. Remap the affected action in [`:config` → Keybindings](#configuration) rather than fighting your multiplexer's config.
 
 ### Mouse events
 
@@ -422,7 +503,7 @@ set -ga terminal-overrides ",*256col*:Tc"
 
 ### Nested panes
 
-pkm has its own split-pane system (`:split`, `Ctrl+W`, `Ctrl+P`). Running it inside an already-split multiplexer pane works, but nesting splits from both layers at once produces two layers of borders with different meanings. Simplest is to give pkm one multiplexer pane and let it own its own splits.
+pkm has its own split-pane system (`:split`, and the Next pane / Pane picker keys). Running it inside an already-split multiplexer pane works, but nesting splits from both layers at once produces two layers of borders with different meanings. Simplest is to give pkm one multiplexer pane and let it own its own splits.
 
 ---
 
@@ -434,7 +515,7 @@ go test ./...
 
 ---
 
-## Developer reference — CLI Standards
+## Developer reference (CLI standards)
 
 ### DSL grammar
 
@@ -443,8 +524,8 @@ go test ./...
 :<compound verb> [arg1]
 ```
 
-- **Verb** — one or two lowercase words after `:` (e.g. `new`, `move`, `add project`, `new template`)
-- Compound verbs use **longest-prefix matching** — `new project ` wins over `new ` when both match
+- **Verb** — one or two lowercase words after `:` (e.g. `new`, `move`, `add project`, `new template`, `insert var`)
+- Compound verbs use **longest-prefix matching** — `insert var ` wins over `insert ` when both match
 - Multi-slot commands use `→` (or `->`) as a separator
 - Quoting optional for free-text titles; quotes stripped before processing
 
@@ -458,31 +539,11 @@ go test ./...
 | Project name | Prefix, case-insensitive | Active projects in `projects.yaml` |
 | Variable name | Prefix, case-insensitive | `:config` → Variables |
 
-### All commands at a glance
-
-| Command | Alias | Slot | Shift key |
-|---------|-------|------|-----------|
-| `new "Title"` | — | title | `N` |
-| `new project <name>` | — | project | — |
-| `add project <name>` | — | project | `P` |
-| `new template "Title"` | — | title | — |
-| `insert <name>` | — | template | `T` |
-| `insert var <name>` | — | variable | — |
-| `open <query>` | — | note | `O` / `S` |
-| `move <note> → <state>` | — | note + state | `M` |
-| `archive <note>` | — | note | `A` |
-| `split [note]` | — | note | — |
-| `close` | — | — | — |
-| `theme <name>` | — | theme | — |
-| `config` | — | — | — |
-| `config export [path]` | — | — | — |
-| `config import [path]` | — | — | — |
-| `help` | — | — | `?` |
-| `quit` | `exit` | — | `Ctrl+Q` / `Ctrl+D` |
+See [All commands](#all-commands) above for the full command-to-slot mapping — this table isn't duplicated here to avoid the two drifting apart.
 
 ### Verb ranking by context
 
-`verbSuggestions()` in `palette.go` shows commands in `allCommands` declaration order by default. A palette opened via `newPalette(...).withContext(ctx)` reorders matches using a fixed priority table (`verbPriority`) keyed by `verbContext` — a hand-authored bias, not a learned/frequency ranking. Current contexts: `ctxNoteOpen` (bare `:` while a note is open) and `ctxEditing` (`Ctrl+Space` from inside the editor, where `:insert` ranks first). Add a new context by adding a `verbContext` constant, an entry in `verbPriority`, and passing `.withContext(...)` from the relevant call site in `model.go`.
+`verbSuggestions()` in `palette.go` shows commands in `allCommands` declaration order by default. A palette opened via `newPalette(...).withContext(ctx)` reorders matches using a fixed priority table (`verbPriority`) keyed by `verbContext` — a hand-authored bias, not a learned/frequency ranking. Current contexts: `ctxNoteOpen` (bare `:` while a note is open) and `ctxEditing` (Palette key from inside the editor, where `:insert` ranks first). Add a new context by adding a `verbContext` constant, an entry in `verbPriority`, and passing `.withContext(...)` from the relevant call site in `model.go`.
 
 ### Adding a new command — checklist
 
@@ -491,5 +552,6 @@ go test ./...
 2. Add routing to `handleCommand` in `commands.go`
    - Compound commands: add `parts[0]+" "+parts[1]` check before the single-word switch
 3. If a new argument type is needed: add `slotKind`, update `contextSuggestions()` and `tabComplete()` in `palette.go`
-4. Add `Shift+Key` handler in `model.go` if a shortcut is needed
-5. Update `help_view.go`, tooltip bar, and this README
+4. Add a `Shift+Key` handler in `model.go` if a shortcut is needed
+5. If it's a new global chord prone to multiplexer collisions: add it to `Keymap` in `appconfig.go` instead of hardcoding the key string, and add a row to `keymapLabels`
+6. Update `help_view.go`, the tooltip bar, and this README's [All commands](#all-commands) / [Global](#global) tables

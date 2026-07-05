@@ -32,8 +32,9 @@ READING & EDITING
 
 COMMAND PALETTE  —  press : or Ctrl+Space to open
   :new "Title"              create note in Inbox
-  :new project <name>       assign open note to a project (moves to Projects)
-  :add project <name>       same as :new project (alias)
+  :new project <name>       create a new project (does not assign the open note)
+  :add project <name>       assign open note to a project (moves to Projects,
+                             creates the project if it doesn't exist yet)
   :new template "Title"     create a new template note
   :insert <name>            insert a template into the current note
   :insert var <name>        insert a variable's value at the cursor (edit mode)
