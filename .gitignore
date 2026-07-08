@@ -1,5 +1,6 @@
 .DS_Store
 /pkm
+test/
 
 # Claude Code project config
 .claude/

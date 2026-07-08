@@ -1,4 +1,14 @@
-theme: dark
+version: 1
+theme: nord
 sidebar_width: 20
 restore_session: true
 line_numbers: true
+keymap:
+    palette: ctrl+@
+    pane_picker: ctrl+p
+    next_pane: ctrl+w
+    quit: ctrl+q
+    undo: ctrl+z
+    redo: ctrl+y
+    save: ctrl+s
+variables: {}
