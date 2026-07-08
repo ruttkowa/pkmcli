@@ -2,18 +2,34 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"regexp"
 	"strings"
 
 	"pkm/internal/vault"
 
+	"github.com/aymanbagabas/go-osc52/v2"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/glamour/ansi"
+	glamourstyles "github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
+	xansi "github.com/charmbracelet/x/ansi"
 )
 
 // linkRef holds the navigation target for one wikilink in parse order.
 type linkRef struct {
 	target string // note title (may not exist yet)
+}
+
+// checkboxLineRe matches a Markdown task-list item: "- [ ] text" / "- [x] text".
+var checkboxLineRe = regexp.MustCompile(`^(\s*[-*]\s+)\[([ xX])\](.*)$`)
+
+// codeSpan is a fenced code block located in the rendered body.
+type codeSpan struct {
+	startLine int // rendered line index (body-relative) of the first content line
+	endLine   int // rendered line index of the last content line
+	content   string
 }
 
 type viewerModel struct {
@@ -25,10 +41,22 @@ type viewerModel struct {
 	scrollOff       int
 	back            bool
 	linkLines       map[int]string // body-relative line index → note title to navigate to
+	checkboxLines   map[int]int    // body-relative rendered line index → raw body line index
+	codeSpans       []codeSpan     // fenced code blocks, in rendered-line order
+
+	// Character-level block cursor (arrow keys), body-relative like scrollOff.
+	cursorRow int
+	cursorCol int
+
+	// Set by update() when Enter activates whatever's under the cursor;
+	// model.go's dispatcher consumes and clears these on the next frame.
+	pendingLinkOpen    string // note title to open, or ""
+	pendingCheckboxRaw int    // raw body line to toggle, or -1
+	pendingCodeCopy    string // code block content to copy, or ""
 }
 
 func newViewer() viewerModel {
-	return viewerModel{}
+	return viewerModel{pendingCheckboxRaw: -1}
 }
 
 func (m viewerModel) withNote(n *vault.Note) viewerModel {
@@ -40,6 +68,13 @@ func (m viewerModel) withNote(n *vault.Note) viewerModel {
 	m.headerLineCount = 0
 	m.renderWidth = 0
 	m.linkLines = nil
+	m.checkboxLines = nil
+	m.codeSpans = nil
+	m.cursorRow = 0
+	m.cursorCol = 0
+	m.pendingLinkOpen = ""
+	m.pendingCheckboxRaw = -1
+	m.pendingCodeCopy = ""
 	return m
 }
 
@@ -52,12 +87,12 @@ func (m viewerModel) preRender(width int, titles map[string]bool) viewerModel {
 	if m.rendered != "" && m.renderWidth == width {
 		return m // already cached for this width
 	}
-	glamourStyle := "dark"
+	base := glamourstyles.DarkStyleConfig
 	if activeTheme.Name == "light" {
-		glamourStyle = "light"
+		base = glamourstyles.LightStyleConfig
 	}
 	r, err := glamour.NewTermRenderer(
-		glamour.WithStandardStyle(glamourStyle),
+		glamour.WithStyles(headingStyleConfig(base)),
 		glamour.WithWordWrap(width-4),
 	)
 	if err != nil {
@@ -73,24 +108,145 @@ func (m viewerModel) preRender(width int, titles map[string]bool) viewerModel {
 	}
 
 	// Render scrollable body.
-	body, refs := buildBodyMd(m.note, titles)
+	body, linkRefs, checkboxRefs, codeRefs := buildBodyMd(m.note, titles)
 	if out, berr := r.Render(body); berr == nil && out != "" {
-		m.rendered, m.linkLines = processRenderedLinks(out, refs)
+		out, m.linkLines = processRenderedLinks(out, linkRefs)
+		m.rendered, m.checkboxLines, m.codeSpans = processCheckboxesAndCode(out, checkboxRefs, codeRefs)
 	} else {
 		m.rendered = m.note.Body
 	}
 	m.renderWidth = width
+
+	// Clamp the cursor into the freshly rendered content — it may point past
+	// the end after an edit shortened the note, or after opening a new note.
+	lines := strings.Split(m.rendered, "\n")
+	if m.cursorRow >= len(lines) {
+		m.cursorRow = max(0, len(lines)-1)
+	}
+	if m.cursorRow >= 0 && m.cursorRow < len(lines) {
+		m.cursorCol = clampCol(m.cursorCol, lines[m.cursorRow])
+	}
 	return m
 }
 
-func (m viewerModel) update(msg tea.KeyMsg) (viewerModel, tea.Cmd) {
+// visibleBodyRows returns how many body rows are visible at the given pane
+// height, mirroring render()'s own accounting for the sticky header, fold
+// separator, and scroll indicator — kept in sync so cursor auto-scroll
+// matches what's actually drawn.
+func (m viewerModel) visibleBodyRows(height int) int {
+	contentRows := height - 1
+	if contentRows < 1 {
+		contentRows = 1
+	}
+	if m.renderedHeader != "" {
+		headerRows := m.headerLineCount
+		if headerRows > contentRows {
+			headerRows = contentRows
+		}
+		contentRows -= headerRows
+		if contentRows > 0 {
+			contentRows--
+		}
+	}
+	if contentRows < 1 {
+		contentRows = 1
+	}
+	return contentRows
+}
+
+// followCursor adjusts scrollOff so cursorRow stays within the visible window.
+func (m viewerModel) followCursor(height int) viewerModel {
+	rows := m.visibleBodyRows(height)
+	if m.cursorRow < m.scrollOff {
+		m.scrollOff = m.cursorRow
+	} else if m.cursorRow >= m.scrollOff+rows {
+		m.scrollOff = m.cursorRow - rows + 1
+	}
+	if m.scrollOff < 0 {
+		m.scrollOff = 0
+	}
+	return m
+}
+
+// clampCol bounds col to a line's display width (0..width, where width itself
+// is a valid "past the last character" cursor position).
+func clampCol(col int, line string) int {
+	w := xansi.StringWidth(line)
+	if col > w {
+		return w
+	}
+	if col < 0 {
+		return 0
+	}
+	return col
+}
+
+// activateCursor sets the pending* field matching whatever's under the
+// cursor, for model.go's dispatcher to act on. No-op if the cursor sits over
+// plain text.
+func (m viewerModel) activateCursor() viewerModel {
+	if target := m.linkAtLine(m.cursorRow); target != "" {
+		m.pendingLinkOpen = target
+		return m
+	}
+	if rawLine, ok := m.checkboxRawLineAt(m.cursorRow); ok {
+		m.pendingCheckboxRaw = rawLine
+		return m
+	}
+	if cs, ok := m.codeSpanAt(m.cursorRow); ok {
+		m.pendingCodeCopy = cs.content
+		return m
+	}
+	return m
+}
+
+// update handles a key while the note viewer has focus. height is the pane's
+// content height, needed to keep cursor auto-scroll (followCursor) in sync
+// with what render() will actually draw.
+func (m viewerModel) update(msg tea.KeyMsg, height int) (viewerModel, tea.Cmd) {
+	lines := strings.Split(m.rendered, "\n")
+
 	switch msg.String() {
-	case "j", "down":
+	case "j":
 		m.scrollOff++
-	case "k", "up":
+	case "k":
 		if m.scrollOff > 0 {
 			m.scrollOff--
 		}
+	case "down":
+		if m.cursorRow < len(lines)-1 {
+			m.cursorRow++
+			m.cursorCol = clampCol(m.cursorCol, lines[m.cursorRow])
+		}
+		m = m.followCursor(height)
+	case "up":
+		if m.cursorRow > 0 {
+			m.cursorRow--
+			m.cursorCol = clampCol(m.cursorCol, lines[m.cursorRow])
+		}
+		m = m.followCursor(height)
+	case "left":
+		if m.cursorCol > 0 {
+			m.cursorCol--
+		} else if m.cursorRow > 0 {
+			m.cursorRow--
+			m.cursorCol = xansi.StringWidth(lines[m.cursorRow])
+		}
+		m = m.followCursor(height)
+	case "right":
+		curWidth := 0
+		if m.cursorRow >= 0 && m.cursorRow < len(lines) {
+			curWidth = xansi.StringWidth(lines[m.cursorRow])
+		}
+		if m.cursorCol < curWidth {
+			m.cursorCol++
+		} else if m.cursorRow < len(lines)-1 {
+			m.cursorRow++
+			m.cursorCol = 0
+		}
+		m = m.followCursor(height)
+	case "enter":
+		m = m.activateCursor()
 	case "esc", "backspace":
 		m.back = true
 	}
@@ -110,6 +266,9 @@ func (m viewerModel) render(width, height int, focused bool) string {
 	}
 
 	bodyLines := strings.Split(rendered, "\n")
+	if focused {
+		bodyLines = m.withCursorOverlay(bodyLines)
+	}
 
 	// Reserve one row for the scroll indicator.
 	contentRows := height - 1
@@ -161,11 +320,10 @@ func (m viewerModel) render(width, height int, focused bool) string {
 	indicator := "\n"
 	if focused && len(bodyLines) > 0 {
 		pct := (start * 100) / len(bodyLines)
-		indicator = "\n" + lipgloss.NewStyle().
-			Width(width - 2).
-			Foreground(activeTheme.TextDim).
-			Align(lipgloss.Right).
-			Render(fmt.Sprintf("%d%%", pct))
+		right := fmt.Sprintf("%d%%", pct)
+		avail := width - 2
+		row := footerRow(avail, "Last saved: "+m.note.Updated.Format("15:04:05"), right)
+		indicator = "\n" + lipgloss.NewStyle().Foreground(activeTheme.TextDim).Render(row)
 	}
 
 	return lipgloss.NewStyle().
@@ -176,12 +334,174 @@ func (m viewerModel) render(width, height int, focused bool) string {
 		Render(sb.String() + indicator)
 }
 
+// footerRow lays out left-aligned and right-aligned text in a single row of
+// the given width, degrading gracefully (shortening, then dropping, the left
+// side) when there isn't room for both — a fixed-width footer that silently
+// overflowed into a second line would desync the pane's rendered height from
+// its bordered box height (see the editor's footerText for the same concern).
+func footerRow(width int, left, right string) string {
+	if gap := width - lipgloss.Width(left) - lipgloss.Width(right); gap >= 1 {
+		return left + strings.Repeat(" ", gap) + right
+	}
+	// No room for both; drop left and right-align just the percentage.
+	if gap := width - lipgloss.Width(right); gap >= 0 {
+		return strings.Repeat(" ", gap) + right
+	}
+	return xansi.Truncate(right, width, "")
+}
+
+// withCursorOverlay highlights whatever interactive element the cursor is
+// currently over (the whole rendered row for a link/checkbox, or every row
+// of a code span), then draws the character-level block cursor on top.
+// Operates on a copy — the cache in m.rendered is never mutated.
+func (m viewerModel) withCursorOverlay(lines []string) []string {
+	if m.cursorRow < 0 || m.cursorRow >= len(lines) {
+		return lines
+	}
+	out := make([]string, len(lines))
+	copy(out, lines)
+
+	_, isCheckbox := m.checkboxRawLineAt(m.cursorRow)
+	switch cs, isCode := m.codeSpanAt(m.cursorRow); {
+	case m.linkAtLine(m.cursorRow) != "", isCheckbox:
+		out[m.cursorRow] = highlightPlain(lines[m.cursorRow], activeTheme.Accent, activeTheme.AccentFg)
+	case isCode:
+		for r := cs.startLine; r <= cs.endLine && r < len(out); r++ {
+			if r >= 0 {
+				out[r] = highlightPlain(lines[r], activeTheme.BlurredBg, activeTheme.TextPrimary)
+			}
+		}
+	}
+
+	out[m.cursorRow] = overlayCursor(out[m.cursorRow], m.cursorCol)
+	return out
+}
+
+// highlightPlain re-renders a rendered line's plain text (discarding its
+// original per-token styling) in a single flat highlight color, the way a
+// text selection overrides syntax coloring.
+func highlightPlain(line string, bg, fg lipgloss.Color) string {
+	plain := xansi.Strip(line)
+	return lipgloss.NewStyle().Background(bg).Foreground(fg).Render(plain)
+}
+
+// overlayCursor draws a solid (non-blinking) block cursor over the character
+// at display column col. The extracted single-width slice is stripped of its
+// own ANSI codes before re-styling — glamour's output packs runs of
+// zero-width "set-then-reset" segments at token boundaries, and a 1-column
+// Cut can pull several of those in alongside the real glyph; rendering that
+// raw would let an embedded reset cancel Reverse before the glyph ever
+// prints, leaving no visible cursor at all (confirmed empirically).
+func overlayCursor(line string, col int) string {
+	width := xansi.StringWidth(line)
+	if col < 0 {
+		col = 0
+	}
+	if col > width {
+		col = width
+	}
+	before := xansi.Cut(line, 0, col)
+	cursorStyle := lipgloss.NewStyle().Reverse(true)
+	if col >= width {
+		return before + cursorStyle.Render(" ")
+	}
+	ch := xansi.Strip(xansi.Cut(line, col, col+1))
+	if ch == "" {
+		ch = " "
+	}
+	after := xansi.Cut(line, col+1, width)
+	return before + cursorStyle.Render(ch) + after
+}
+
+// copyToClipboardCmd copies content to the system clipboard via OSC 52, which
+// works over SSH and inside tmux/zellij (unlike a local-only clipboard lib).
+func copyToClipboardCmd(content string) tea.Cmd {
+	return func() tea.Msg {
+		osc52.New(content).WriteTo(os.Stdout)
+		return nil
+	}
+}
+
 // linkAtLine returns the note title linked on a given rendered line index, or "".
 func (m viewerModel) linkAtLine(renderedLine int) string {
 	if m.linkLines == nil {
 		return ""
 	}
 	return m.linkLines[renderedLine]
+}
+
+// checkboxRawLineAt returns the raw body line index of the checkbox item on
+// a given rendered line index, and whether one was found there.
+func (m viewerModel) checkboxRawLineAt(renderedLine int) (int, bool) {
+	if m.checkboxLines == nil {
+		return 0, false
+	}
+	rawLine, ok := m.checkboxLines[renderedLine]
+	return rawLine, ok
+}
+
+// codeSpanAt returns the fenced code block whose rendered lines include the
+// given line index, and whether one was found there.
+func (m viewerModel) codeSpanAt(renderedLine int) (codeSpan, bool) {
+	for _, cs := range m.codeSpans {
+		if renderedLine >= cs.startLine && renderedLine <= cs.endLine {
+			return cs, true
+		}
+	}
+	return codeSpan{}, false
+}
+
+// toggleCheckboxLine flips "[ ]" <-> "[x]" on the given raw line of body.
+// ok is false if that line isn't a checkbox item (e.g. a stale raw-line
+// index after the note was edited elsewhere).
+func toggleCheckboxLine(body string, rawLine int) (string, bool) {
+	lines := strings.Split(body, "\n")
+	if rawLine < 0 || rawLine >= len(lines) {
+		return body, false
+	}
+	m := checkboxLineRe.FindStringSubmatch(lines[rawLine])
+	if m == nil {
+		return body, false
+	}
+	mark := "x"
+	if m[2] == "x" || m[2] == "X" {
+		mark = " "
+	}
+	lines[rawLine] = m[1] + "[" + mark + "]" + m[3]
+	return strings.Join(lines, "\n"), true
+}
+
+// headingStyleConfig returns base with H2-H6 given distinct, non-literal
+// styling. Glamour's built-in styles only set a literal "## "/"### " prefix
+// for these levels (H1 alone gets a boxed, hash-free treatment), so without
+// this they render as plain colored text with the hash marks still visible.
+func headingStyleConfig(base ansi.StyleConfig) ansi.StyleConfig {
+	yes := true
+	accent, sub, dim := "39", "35", "244"
+
+	base.H2.Prefix = ""
+	base.H2.Bold = &yes
+	base.H2.Underline = &yes
+	base.H2.Color = &accent
+
+	base.H3.Prefix = ""
+	base.H3.Bold = &yes
+	base.H3.Color = &accent
+
+	base.H4.Prefix = ""
+	base.H4.Bold = &yes
+	base.H4.Italic = &yes
+	base.H4.Color = &sub
+
+	base.H5.Prefix = ""
+	base.H5.Italic = &yes
+	base.H5.Color = &sub
+
+	base.H6.Prefix = ""
+	base.H6.Italic = &yes
+	base.H6.Color = &dim
+
+	return base
 }
 
 // buildHeaderMd returns the markdown for the sticky header (title + meta).
@@ -196,9 +516,121 @@ func buildHeaderMd(n *vault.Note) string {
 	return fmt.Sprintf("# %s\n\n_%s_", n.Title, meta)
 }
 
-// buildBodyMd substitutes wikilinks and returns the body-only markdown for glamour.
-func buildBodyMd(n *vault.Note, titles map[string]bool) (string, []linkRef) {
-	return substituteLinks(n.Body, titles)
+// buildBodyMd tags checkboxes/code blocks, substitutes wikilinks, and
+// returns the body-only markdown for glamour, plus refs for recovering each
+// interactive element's rendered position after rendering.
+func buildBodyMd(n *vault.Note, titles map[string]bool) (string, []linkRef, []checkboxRef, []codeRef) {
+	annotated, checkboxRefs, codeRefs := annotateInteractive(n.Body)
+	body, linkRefs := substituteLinks(annotated, titles)
+	return body, linkRefs, checkboxRefs, codeRefs
+}
+
+// checkboxRef records a task-list item found in the raw body, in parse order.
+type checkboxRef struct {
+	rawLine int // index into the raw body's lines
+	checked bool
+}
+
+// codeRef records a fenced code block's raw content, in parse order.
+type codeRef struct {
+	content string // code only, fence markers excluded
+}
+
+// fenceLineRe matches a fenced-code-block delimiter line (``` or ~~~ fences
+// are not distinguished — only backtick fences are used in this app).
+var fenceLineRe = regexp.MustCompile("^\\s*```")
+
+// PUA sentinels for checkbox/code-block position tracking (see the link
+// sentinels above for the same technique). Placed after "] " rather than
+// wrapping the checkbox brackets themselves, and inside — not around — the
+// fenced fence delimiters, because goldmark's task-list and code-fence
+// detection only recognizes the literal syntax at the very start of the
+// line; sentinels placed there would silently fall back to a plain bullet
+// (verified empirically against glamour's task-list rendering).
+const (
+	cbMark    = "" // checkbox row marker
+	codeOpen  = "" // first content line of a fenced code block
+	codeClose = "" // last content line of a fenced code block
+)
+
+// annotateInteractive scans the raw body line-by-line for checkbox items and
+// fenced code blocks, tagging them with invisible PUA sentinels so their
+// rendered position can be recovered after glamour renders the markdown —
+// reflow/word-wrap means rendered lines don't map 1:1 to raw lines, but a
+// sentinel travels through rendering as literal text and can be found again
+// (verified empirically, including inside chroma-highlighted code). Must run
+// before substituteLinks, which uses a different sentinel range.
+func annotateInteractive(body string) (string, []checkboxRef, []codeRef) {
+	lines := strings.Split(body, "\n")
+	var checkboxRefs []checkboxRef
+	var codeRefs []codeRef
+
+	inFence := false
+	fenceStart := 0
+
+	for i, line := range lines {
+		if fenceLineRe.MatchString(line) {
+			if !inFence {
+				inFence = true
+				fenceStart = i + 1
+			} else {
+				inFence = false
+				content := lines[fenceStart:i]
+				if len(content) > 0 {
+					codeRefs = append(codeRefs, codeRef{content: strings.Join(content, "\n")})
+					lines[fenceStart] = codeOpen + lines[fenceStart]
+					lines[i-1] = lines[i-1] + codeClose
+				}
+			}
+			continue
+		}
+		if inFence {
+			continue
+		}
+		if m := checkboxLineRe.FindStringSubmatch(line); m != nil {
+			checked := m[2] == "x" || m[2] == "X"
+			checkboxRefs = append(checkboxRefs, checkboxRef{rawLine: i, checked: checked})
+			lines[i] = m[1] + "[" + m[2] + "]" + cbMark + m[3]
+		}
+	}
+	return strings.Join(lines, "\n"), checkboxRefs, codeRefs
+}
+
+// processCheckboxesAndCode strips checkbox/code sentinels from the rendered
+// body, building rendered-line maps back to the raw refs annotateInteractive
+// found. Sentinels are matched to refs in left-to-right parse order, the
+// same convention processRenderedLinks uses for links.
+func processCheckboxesAndCode(rendered string, checkboxRefs []checkboxRef, codeRefs []codeRef) (string, map[int]int, []codeSpan) {
+	lines := strings.Split(rendered, "\n")
+	checkboxLines := make(map[int]int)
+	var spans []codeSpan
+
+	cbIdx, codeIdx := 0, 0
+	openCodeLine := -1
+
+	for lineIdx, line := range lines {
+		if idx := strings.Index(line, cbMark); idx != -1 {
+			if cbIdx < len(checkboxRefs) {
+				checkboxLines[lineIdx] = checkboxRefs[cbIdx].rawLine
+				cbIdx++
+			}
+			line = line[:idx] + line[idx+len(cbMark):]
+		}
+		if idx := strings.Index(line, codeOpen); idx != -1 {
+			openCodeLine = lineIdx
+			line = line[:idx] + line[idx+len(codeOpen):]
+		}
+		if idx := strings.Index(line, codeClose); idx != -1 {
+			line = line[:idx] + line[idx+len(codeClose):]
+			if openCodeLine != -1 && codeIdx < len(codeRefs) {
+				spans = append(spans, codeSpan{startLine: openCodeLine, endLine: lineIdx, content: codeRefs[codeIdx].content})
+				codeIdx++
+			}
+			openCodeLine = -1
+		}
+		lines[lineIdx] = line
+	}
+	return strings.Join(lines, "\n"), checkboxLines, spans
 }
 
 // substituteLinks replaces [[Title|Alias]] / [[Title]] with glamour-ready markdown.

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -9,6 +10,8 @@ import (
 	"pkm/internal/vault"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	xansi "github.com/charmbracelet/x/ansi"
 )
 
 // --- headless simulation helpers ---
@@ -46,6 +49,8 @@ func key(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyEscape}
 	case "tab":
 		return tea.KeyMsg{Type: tea.KeyTab}
+	case "shift+tab":
+		return tea.KeyMsg{Type: tea.KeyShiftTab}
 	case "backspace":
 		return tea.KeyMsg{Type: tea.KeyBackspace}
 	default:
@@ -374,6 +379,17 @@ func TestHeadlessNavigation(t *testing.T) {
 	if m.activePane != paneMain {
 		t.Errorf("after second Tab: expected paneMain, got %v", m.activePane)
 	}
+
+	// Shift+Tab mirrors Tab for the sidebar/main toggle (only two states, so
+	// "previous" and "next" land on the same target either direction).
+	m = step(t, m, key("shift+tab"), "shift+tab (→ sidebar)")
+	if m.activePane != paneSidebar {
+		t.Errorf("after Shift+Tab: expected paneSidebar, got %v", m.activePane)
+	}
+	m = step(t, m, key("shift+tab"), "shift+tab (→ pane)")
+	if m.activePane != paneMain {
+		t.Errorf("after second Shift+Tab: expected paneMain, got %v", m.activePane)
+	}
 }
 
 // TestEditFromSidebarFocus guards against a regression where pressing "e" to
@@ -446,15 +462,23 @@ func TestHeadlessPalette(t *testing.T) {
 func TestHeadlessMouse(t *testing.T) {
 	m := setupTUI(t)
 
-	// Click on sidebar Inbox section header.
+	// Click the "▶" glyph on the sidebar Inbox section header — only the
+	// glyph column toggles expand/collapse (see sidebarGlyphHit).
 	// With pane border, y offsets: breadcrumb(0), top-border(1), SECTIONS(2), blank(3), items(4+)
 	// Inbox is items[0] → y=4
-	m = step(t, m, click(5, 4), "click sidebar Inbox")
+	m = step(t, m, click(2, 4), "click sidebar Inbox glyph")
+	if !m.sidebar.expanded[vault.StateInbox] {
+		t.Error("Inbox should be expanded after glyph click")
+	}
+
+	// Clicking the label (not the glyph) opens the section view but must
+	// not re-toggle (collapse) the expand state.
+	m = step(t, m, click(8, 4), "click sidebar Inbox label")
 	if m.sidebar.activeState != vault.StateInbox {
-		t.Errorf("sidebar state after click: got %v", m.sidebar.activeState)
+		t.Errorf("sidebar state after label click: got %v", m.sidebar.activeState)
 	}
 	if !m.sidebar.expanded[vault.StateInbox] {
-		t.Error("Inbox should be expanded after click")
+		t.Error("Inbox should still be expanded after label click")
 	}
 
 	// Click on a note in the main pane.
@@ -470,6 +494,306 @@ func TestHeadlessMouse(t *testing.T) {
 	m = step(t, m, click(5, 7), "click sidebar Projects")
 	if m.sidebar.activeState != vault.StateProjects {
 		t.Errorf("sidebar state after click Projects: got %v", m.sidebar.activeState)
+	}
+}
+
+// TestHeadlessCheckboxClickToggle covers clicking a task-list checkbox in
+// view mode: the click should flip "[ ]" <-> "[x]" in the saved note body.
+func TestHeadlessCheckboxClickToggle(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("Tasks")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	n.Body = "- [ ] Task one"
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+
+	sp := &m.splits[m.activeSplit]
+	sp.openNote(n)
+	l := m.computeLayout()
+	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+
+	var bodyLine int
+	found := false
+	for rl := range sp.viewer.checkboxLines {
+		bodyLine = rl
+		found = true
+		break
+	}
+	if !found {
+		t.Fatalf("no checkbox detected; checkboxLines=%v rendered=%q", sp.viewer.checkboxLines, sp.viewer.rendered)
+	}
+
+	// Inverse of handleMouseClick's bodyLine math: y offsets are
+	// breadcrumb(0), top-border(1), content starts at y=2.
+	y := 2 + sp.viewer.headerLineCount + 1 + bodyLine - sp.viewer.scrollOff
+	m = step(t, m, click(l.sidebarWidth+5, y), "click checkbox")
+
+	updated, err := m.vault.FindByTitle("Tasks")
+	if err != nil {
+		t.Fatalf("reload note: %v", err)
+	}
+	if !strings.Contains(updated.Body, "[x]") {
+		t.Errorf("expected checkbox toggled to [x], got body=%q", updated.Body)
+	}
+}
+
+// TestViewerCursorMovement exercises the block cursor's arrow-key movement
+// and boundary clamping directly against viewerModel, independent of Model
+// plumbing. Markdown reflow means raw line count doesn't predict rendered
+// line count (e.g. unbroken lines get joined into one paragraph), so this
+// finds the actual rendered content line rather than assuming an index.
+func TestViewerCursorMovement(t *testing.T) {
+	n := note("1", "T")
+	n.Body = "A short paragraph.\n\nAnother paragraph here."
+	m := newViewer().withNote(n)
+	m = m.preRender(60, nil)
+
+	lines := strings.Split(m.rendered, "\n")
+	contentRow := -1
+	for i, l := range lines {
+		if xansi.StringWidth(l) > 0 {
+			contentRow = i
+			break
+		}
+	}
+	if contentRow == -1 || contentRow+1 >= len(lines) {
+		t.Fatalf("expected at least one non-blank rendered line followed by another: %q", lines)
+	}
+
+	// Down past the last line clamps instead of going out of bounds.
+	for i := 0; i < len(lines)+5; i++ {
+		m, _ = m.update(tea.KeyMsg{Type: tea.KeyDown}, 20)
+	}
+	if m.cursorRow != len(lines)-1 {
+		t.Errorf("expected cursor clamped at last line %d, got %d", len(lines)-1, m.cursorRow)
+	}
+
+	// Right past end-of-line wraps to the start of the next line.
+	m.cursorRow, m.cursorCol = contentRow, 0
+	lineWidth := xansi.StringWidth(lines[contentRow])
+	for i := 0; i < lineWidth; i++ {
+		m, _ = m.update(tea.KeyMsg{Type: tea.KeyRight}, 20)
+	}
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyRight}, 20)
+	if m.cursorRow != contentRow+1 || m.cursorCol != 0 {
+		t.Errorf("expected wrap to (%d,0), got (%d,%d)", contentRow+1, m.cursorRow, m.cursorCol)
+	}
+
+	// Left at column 0 wraps back to the end of the previous line.
+	m, _ = m.update(tea.KeyMsg{Type: tea.KeyLeft}, 20)
+	if m.cursorRow != contentRow || m.cursorCol != lineWidth {
+		t.Errorf("expected wrap back to (%d,%d), got (%d,%d)", contentRow, lineWidth, m.cursorRow, m.cursorCol)
+	}
+}
+
+// TestHeadlessCursorActivateLink covers pressing Enter while the block
+// cursor sits on a wikilink: it should navigate to that note, the same as a
+// mouse click on the link.
+func TestHeadlessCursorActivateLink(t *testing.T) {
+	m := setupTUI(t)
+	target, err := m.vault.Create("Target Note")
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	m.index.Upsert(target)
+	m.titleSet[strings.ToLower(target.Title)] = true
+
+	n, err := m.vault.Create("Linker")
+	if err != nil {
+		t.Fatalf("create linker: %v", err)
+	}
+	n.Body = "[[Target Note]]"
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save linker: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+
+	sp := &m.splits[m.activeSplit]
+	sp.openNote(n)
+	l := m.computeLayout()
+	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+
+	found := false
+	for rl := range sp.viewer.linkLines {
+		sp.viewer.cursorRow = rl
+		found = true
+		break
+	}
+	if !found {
+		t.Fatalf("no link detected; linkLines=%v rendered=%q", sp.viewer.linkLines, sp.viewer.rendered)
+	}
+	sp.viewer.cursorCol = 0
+
+	m = step(t, m, key("enter"), "activate link under cursor")
+
+	got := m.splits[m.activeSplit].viewer.note
+	if got == nil || got.Title != "Target Note" {
+		t.Errorf("expected cursor-activated Enter to open Target Note, got %v", got)
+	}
+}
+
+// TestHeadlessCursorActivateCheckbox covers pressing Enter while the block
+// cursor sits on a task-list checkbox: it should toggle it, the same as a
+// mouse click.
+func TestHeadlessCursorActivateCheckbox(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("Tasks")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	n.Body = "- [ ] Task one"
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+
+	sp := &m.splits[m.activeSplit]
+	sp.openNote(n)
+	l := m.computeLayout()
+	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+
+	found := false
+	for rl := range sp.viewer.checkboxLines {
+		sp.viewer.cursorRow = rl
+		found = true
+		break
+	}
+	if !found {
+		t.Fatalf("no checkbox detected; checkboxLines=%v", sp.viewer.checkboxLines)
+	}
+
+	m = step(t, m, key("enter"), "activate checkbox under cursor")
+
+	updated, err := m.vault.FindByTitle("Tasks")
+	if err != nil {
+		t.Fatalf("reload note: %v", err)
+	}
+	if !strings.Contains(updated.Body, "[x]") {
+		t.Errorf("expected checkbox toggled to [x], got body=%q", updated.Body)
+	}
+}
+
+// TestHeadlessCursorActivateCodeCopy covers pressing Enter while the block
+// cursor sits inside a fenced code block: it should trigger a clipboard-copy
+// command and report status, without mutating the note.
+func TestHeadlessCursorActivateCodeCopy(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("Snippet")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	n.Body = "```go\nfmt.Println(\"hi\")\n```"
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+
+	sp := &m.splits[m.activeSplit]
+	sp.openNote(n)
+	l := m.computeLayout()
+	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+
+	if len(sp.viewer.codeSpans) == 0 {
+		t.Fatalf("no code span detected")
+	}
+	sp.viewer.cursorRow = sp.viewer.codeSpans[0].startLine
+
+	m = step(t, m, key("enter"), "activate code block under cursor")
+
+	if m.statusMsg != "copied code block" {
+		t.Errorf("expected status %q, got %q", "copied code block", m.statusMsg)
+	}
+}
+
+// typeInPalette feeds a string into the open palette one rune at a time,
+// matching how paletteModel.update only accepts single-rune key messages.
+func typeInPalette(t *testing.T, m Model, s string) Model {
+	t.Helper()
+	for _, ch := range s {
+		m = step(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}}, "type char")
+	}
+	return m
+}
+
+// TestHeadlessSearchBareEnterOpensResults covers the "no explicit pick" path:
+// typing :search <query> and pressing Enter without arrowing through the
+// dropdown should open the full results list, not any single note.
+func TestHeadlessSearchBareEnterOpensResults(t *testing.T) {
+	m := setupTUI(t)
+	// setupTUI seeds "Docker Basics" and "Linux Setup".
+	m = step(t, m, key(":"), "open palette")
+	m = typeInPalette(t, m, "search docker")
+	m = step(t, m, key("enter"), "submit search (no nav)")
+
+	if m.showPalette {
+		t.Fatal("palette still open after Enter")
+	}
+	sp := m.splits[m.activeSplit]
+	if sp.activeView != viewList {
+		t.Fatalf("expected results list view, got %v", sp.activeView)
+	}
+	if len(m.noteList.notes) != 1 || m.noteList.notes[0].Title != "Docker Basics" {
+		t.Errorf("expected [Docker Basics], got %v", m.noteList.notes)
+	}
+}
+
+// TestHeadlessSearchNavigatedEnterOpensNote covers the "explicit pick" path:
+// arrowing to a dropdown hit before pressing Enter opens that note directly.
+func TestHeadlessSearchNavigatedEnterOpensNote(t *testing.T) {
+	m := setupTUI(t)
+	m = step(t, m, key(":"), "open palette")
+	m = typeInPalette(t, m, "search docker")
+	m = step(t, m, key("down"), "navigate to the first hit")
+	m = step(t, m, key("enter"), "submit search (navigated)")
+
+	if m.showPalette {
+		t.Fatal("palette still open after Enter")
+	}
+	sp := m.splits[m.activeSplit]
+	if sp.activeView != viewNote || sp.viewer.note == nil {
+		t.Fatalf("expected the hit opened directly, got view=%v", sp.activeView)
+	}
+	if sp.viewer.note.Title != "Docker Basics" {
+		t.Errorf("expected Docker Basics opened, got %q", sp.viewer.note.Title)
+	}
+}
+
+// TestHeadlessSearchBackReturnsToResults covers back-navigation out of a
+// result: it should land on the results list again, not a fresh search.
+// Crucially, the split already has an unrelated note open before the search
+// runs (as it would after session restore) — a regression test for a real
+// bug where "back" popped into that pre-existing history instead of
+// stopping at the search results, because openNote merges into whatever
+// history already existed.
+func TestHeadlessSearchBackReturnsToResults(t *testing.T) {
+	m := setupTUI(t)
+	linux, err := m.vault.FindByTitle("Linux Setup")
+	if err != nil {
+		t.Fatalf("find seed note: %v", err)
+	}
+	m.splits[m.activeSplit].openNote(linux)
+
+	m = step(t, m, key(":"), "open palette")
+	m = typeInPalette(t, m, "search docker")
+	m = step(t, m, key("down"), "navigate to the first hit")
+	m = step(t, m, key("enter"), "open the hit")
+
+	m = step(t, m, key("esc"), "back out of the note")
+
+	sp := m.splits[m.activeSplit]
+	if sp.activeView != viewList {
+		t.Fatalf("expected back to land on the results list, got %v (note=%v)", sp.activeView, sp.viewer.note)
+	}
+	if len(m.noteList.notes) != 1 || m.noteList.notes[0].Title != "Docker Basics" {
+		t.Errorf("expected results still [Docker Basics], got %v", m.noteList.notes)
 	}
 }
 
@@ -500,6 +824,88 @@ func TestHeadlessCreateNote(t *testing.T) {
 // TestEditorCtrlSpaceInsertStaysInEditor covers Phase 2 of the editor/palette
 // integration: Ctrl+Space opens the palette on top of a still-live editor,
 // and :insert writes into the open buffer without saving or leaving edit mode.
+// TestEditorTripleBacktickOpensFence guards against the reported bug where
+// typing three backticks produced a four-backtick autoclose. Typing "```"
+// should expand into a full fenced block ("```\n\n```") with the cursor
+// parked on the blank line inside it, not leave a stray closing backtick.
+func TestEditorTripleBacktickOpensFence(t *testing.T) {
+	m := setupTUI(t)
+	m = step(t, m, key("enter"), "open first note")
+	m = step(t, m, key("e"), "e (edit)")
+	if m.splits[m.activeSplit].activeView != viewEdit {
+		t.Fatal("expected viewEdit")
+	}
+
+	m = typeString(t, m, "```")
+
+	body := m.splits[m.activeSplit].editor.ta.Value()
+	if strings.Count(body, "`") != 6 {
+		t.Errorf("expected exactly two fences (6 backticks), got %d in body = %q", strings.Count(body, "`"), body)
+	}
+	if !strings.Contains(body, "```\n\n```") {
+		t.Errorf("expected an opened fence block, body = %q", body)
+	}
+}
+
+// TestEditorFooterShowsDirtyAndSavedTime covers moving the "saved" status out
+// of the global hotkey toolbar into a persistent footer inside the document
+// pane: the editor footer shows an "Unsaved changes" marker while the draft
+// diverges from the saved note, and a "Last saved" timestamp that only
+// updates once the draft is actually committed.
+func TestEditorFooterShowsDirtyAndSavedTime(t *testing.T) {
+	m := setupTUI(t)
+	m = step(t, m, key("enter"), "open first note")
+	m = step(t, m, key("e"), "e (edit)")
+
+	sp := m.splits[m.activeSplit]
+	savedAt := sp.editor.note.Updated
+	if sp.editor.dirty() {
+		t.Fatal("fresh editor should not be dirty")
+	}
+	body := sp.editor.render(100, 20)
+	if strings.Contains(body, "Unsaved changes") {
+		t.Error("unexpected dirty marker before any edit")
+	}
+	if !strings.Contains(body, "Last saved: "+savedAt.Format("15:04:05")) {
+		t.Errorf("expected last-saved timestamp in footer, got: %q", body)
+	}
+
+	m = typeString(t, m, "x")
+	sp = m.splits[m.activeSplit]
+	if !sp.editor.dirty() {
+		t.Fatal("editor should be dirty after typing")
+	}
+	if !strings.Contains(sp.editor.render(100, 20), "Unsaved changes") {
+		t.Error("expected dirty marker after typing")
+	}
+	// Regression guard: a narrow pane must degrade the footer to a single
+	// line rather than wrap it (a wrapped footer pushes the pane's content
+	// past its allotted height — see editPane.footerText / viewer's
+	// footerRow). Every degradation stage must stay within width.
+	for _, w := range []int{100, 60, 40, 25, 15, 8} {
+		line := sp.editor.footerText(w, 5)
+		if lipgloss.Width(line) > w {
+			t.Errorf("footerText(%d) produced a line %d cells wide: %q", w, lipgloss.Width(line), line)
+		}
+	}
+
+	m = step(t, m, tea.KeyMsg{Type: tea.KeyCtrlS}, "ctrl+s (save)")
+	if m.statusMsg != "" {
+		t.Errorf("save should not set the global toast status, got %q", m.statusMsg)
+	}
+	sp = m.splits[m.activeSplit]
+	if sp.activeView != viewNote {
+		t.Fatal("expected to land back in the viewer after save")
+	}
+	if sp.viewer.note.Updated.Before(savedAt) {
+		t.Error("expected Updated timestamp not to move backward after save")
+	}
+	viewerBody := sp.viewer.render(60, 20, true)
+	if !strings.Contains(viewerBody, "Last saved: "+sp.viewer.note.Updated.Format("15:04:05")) {
+		t.Errorf("expected last-saved timestamp in viewer footer, got: %q", viewerBody)
+	}
+}
+
 func TestEditorCtrlSpaceInsertStaysInEditor(t *testing.T) {
 	m := setupTUI(t)
 	tmpl, err := m.vault.Create("Meeting Notes")
@@ -742,6 +1148,198 @@ func TestProjectDetailBridgeEntryDoesNotLeak(t *testing.T) {
 	}
 	if got := m.splits[m.activeSplit].projectDetail.bridgeInput; got != "N?" {
 		t.Errorf("bridgeInput = %q, want %q", got, "N?")
+	}
+}
+
+// TestHeadlessDeleteThenUndo covers the full :delete safety net: the file
+// must actually disappear from disk, and Ctrl+Z must recreate it with the
+// original body and re-register the title so links to it render as working.
+func TestHeadlessDeleteThenUndo(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("Doomed")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	n.Body = "some content"
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+	path := n.Path
+
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected file to exist before delete: %v", err)
+	}
+
+	msg, _ := m.cmdDelete([]string{"Doomed"})
+	if !strings.Contains(msg, "deleted") {
+		t.Fatalf("cmdDelete message = %q", msg)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected file removed after delete, stat err = %v", err)
+	}
+	if _, err := m.vault.FindByTitle("Doomed"); err == nil {
+		t.Error("expected FindByTitle to fail after delete")
+	}
+	if m.titleSet[strings.ToLower("Doomed")] {
+		t.Error("expected titleSet entry removed after delete")
+	}
+
+	m.handleUndo()
+
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected file restored after undo: %v", err)
+	}
+	restored, err := m.vault.FindByTitle("Doomed")
+	if err != nil {
+		t.Fatalf("FindByTitle after undo: %v", err)
+	}
+	if strings.TrimSpace(restored.Body) != "some content" {
+		t.Errorf("restored body = %q, want it to contain %q", restored.Body, "some content")
+	}
+	if !m.titleSet[strings.ToLower("Doomed")] {
+		t.Error("expected titleSet entry restored after undo")
+	}
+}
+
+// TestHeadlessMouseWheelScrollsViewer exercises the wheel-over-viewer path in
+// handleMouseWheel end-to-end via Update, guarding the pane-index math shared
+// with handleMouseClick (never exercised live since tmux can't send wheel
+// events easily).
+// TestFooterRowNeverExceedsWidth guards the viewer's "Last saved" + scroll-%
+// footer against the same wrap-desyncs-the-border bug fixed in the editor
+// footer: at any width, the rendered row must fit within it.
+func TestFooterRowNeverExceedsWidth(t *testing.T) {
+	left := "Last saved: 15:04:05"
+	right := "100%"
+	for _, w := range []int{60, 30, 20, 10, 4, 1, 0} {
+		row := footerRow(w, left, right)
+		if lipgloss.Width(row) > w {
+			t.Errorf("footerRow(%d): got width %d, row = %q", w, lipgloss.Width(row), row)
+		}
+	}
+}
+
+func TestHeadlessMouseWheelScrollsViewer(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("Wheel Target")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	n.Body = strings.Repeat("line of body text\n", 40)
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+
+	sp := &m.splits[m.activeSplit]
+	sp.openNote(n)
+	l := m.computeLayout()
+	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+
+	wheelX := l.sidebarWidth + 5
+	before := sp.viewer.scrollOff
+	m = step(t, m, tea.MouseMsg{X: wheelX, Y: 10, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown}, "wheel down over viewer")
+	sp = &m.splits[m.activeSplit]
+	if sp.viewer.scrollOff != before+1 {
+		t.Errorf("scrollOff after wheel down: got %d, want %d", sp.viewer.scrollOff, before+1)
+	}
+
+	m = step(t, m, tea.MouseMsg{X: wheelX, Y: 10, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelUp}, "wheel up over viewer")
+	sp = &m.splits[m.activeSplit]
+	if sp.viewer.scrollOff != before {
+		t.Errorf("scrollOff after wheel up: got %d, want %d", sp.viewer.scrollOff, before)
+	}
+
+	// Wheel over the sidebar must move the sidebar cursor instead.
+	beforeCursor := m.sidebar.cursor
+	m = step(t, m, tea.MouseMsg{X: 2, Y: 5, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown}, "wheel down over sidebar")
+	if m.sidebar.cursor != beforeCursor+1 {
+		t.Errorf("sidebar cursor after wheel down: got %d, want %d", m.sidebar.cursor, beforeCursor+1)
+	}
+	sp = &m.splits[m.activeSplit]
+	if sp.viewer.scrollOff != before {
+		t.Error("wheel over sidebar should not have scrolled the viewer")
+	}
+}
+
+// TestHeadlessImportPopover drives the full :import popover flow: opening it
+// via the "I" hotkey, typing a path, tabbing to the move/copy toggle and
+// flipping it to Copy, tabbing to the destination and cycling it, then
+// confirming — and checks both the vault side effect (note created, source
+// file preserved since Copy was selected) and that the popover closes.
+func TestHeadlessImportPopover(t *testing.T) {
+	m := setupTUI(t)
+
+	srcDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "Imported Note.md")
+	if err := os.WriteFile(srcPath, []byte("imported body text"), 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	m = step(t, m, key("I"), "I (open import popover)")
+	if !m.showImport {
+		t.Fatal("expected showImport=true after I")
+	}
+
+	m = typeString(t, m, srcPath)
+	if m.importView.pathInput.Value() != srcPath {
+		t.Fatalf("path input = %q, want %q", m.importView.pathInput.Value(), srcPath)
+	}
+
+	m = step(t, m, key("tab"), "tab (-> move/copy)")
+	if m.importView.focused != impFldMove {
+		t.Fatalf("expected focus on impFldMove, got %v", m.importView.focused)
+	}
+	if !m.importView.move {
+		t.Fatal("expected move=true (default) before toggling")
+	}
+	m = step(t, m, key(" "), "space (toggle to copy)")
+	if m.importView.move {
+		t.Fatal("expected move=false after space toggle")
+	}
+
+	m = step(t, m, key("tab"), "tab (-> destination)")
+	if m.importView.focused != impFldDest {
+		t.Fatalf("expected focus on impFldDest, got %v", m.importView.focused)
+	}
+	m = step(t, m, key("right"), "right (cycle destination)")
+
+	m = step(t, m, key("tab"), "tab (-> confirm)")
+	if m.importView.focused != impFldConfirm {
+		t.Fatalf("expected focus on impFldConfirm, got %v", m.importView.focused)
+	}
+	m = step(t, m, key("enter"), "enter (confirm import)")
+
+	if m.showImport {
+		t.Fatalf("expected popover closed after successful import, errMsg=%q", m.importView.errMsg)
+	}
+	n, err := m.vault.FindByTitle("Imported Note")
+	if err != nil {
+		t.Fatalf("FindByTitle: %v", err)
+	}
+	if !strings.Contains(n.Body, "imported body text") {
+		t.Errorf("imported body missing, got %q", n.Body)
+	}
+	if _, err := os.Stat(srcPath); err != nil {
+		t.Errorf("expected source file preserved (Copy was selected): %v", err)
+	}
+	sp := m.splits[m.activeSplit]
+	if sp.activeView != viewNote || sp.viewer.note == nil || sp.viewer.note.ID != n.ID {
+		t.Error("expected the imported note to be opened in the active split")
+	}
+}
+
+// TestHeadlessImportPopoverEsc guards that Esc cancels the popover without
+// touching the vault.
+func TestHeadlessImportPopoverEsc(t *testing.T) {
+	m := setupTUI(t)
+	m = step(t, m, key("I"), "I (open import popover)")
+	m = step(t, m, key("esc"), "esc (cancel)")
+	if m.showImport {
+		t.Error("expected showImport=false after Esc")
 	}
 }
 

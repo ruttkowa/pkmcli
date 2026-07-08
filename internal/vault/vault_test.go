@@ -100,6 +100,78 @@ func TestCreateNote(t *testing.T) {
 	}
 }
 
+func TestImportMovesFileByDefault(t *testing.T) {
+	v := setupVault(t)
+	src := filepath.Join(t.TempDir(), "External Note.md")
+	if err := os.WriteFile(src, []byte("some external content"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	n, err := v.Import(src, StateInbox, true)
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if n.Title != "External Note" {
+		t.Errorf("Title: got %q, want %q", n.Title, "External Note")
+	}
+	if n.State != StateInbox {
+		t.Errorf("State: got %q, want %q", n.State, StateInbox)
+	}
+	if n.ID == "" {
+		t.Error("ID is empty")
+	}
+	if !strings.Contains(n.Body, "some external content") {
+		t.Errorf("Body missing source content: %q", n.Body)
+	}
+	if _, err := os.Stat(n.Path); err != nil {
+		t.Errorf("imported file not created: %v", err)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Errorf("expected source file removed after move, stat err = %v", err)
+	}
+}
+
+func TestImportCopiesFileWhenMoveFalse(t *testing.T) {
+	v := setupVault(t)
+	src := filepath.Join(t.TempDir(), "Keep Me.md")
+	if err := os.WriteFile(src, []byte("copy me"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	n, err := v.Import(src, StateInbox, false)
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if _, err := os.Stat(n.Path); err != nil {
+		t.Errorf("imported file not created: %v", err)
+	}
+	if _, err := os.Stat(src); err != nil {
+		t.Errorf("expected source file preserved after copy, stat err = %v", err)
+	}
+}
+
+func TestImportPreservesExistingTagsButAssignsFreshMetadata(t *testing.T) {
+	v := setupVault(t)
+	src := filepath.Join(t.TempDir(), "Tagged.md")
+	raw := "---\ntags:\n  - foo\n  - bar\nstate: archive\n---\nbody text\n"
+	if err := os.WriteFile(src, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	n, err := v.Import(src, StateProjects, true)
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if len(n.Tags) != 2 || n.Tags[0] != "foo" || n.Tags[1] != "bar" {
+		t.Errorf("Tags not preserved: %v", n.Tags)
+	}
+	// State/ID/Created/Updated must reflect the import call, not the
+	// source file's own frontmatter (which claimed state: archive).
+	if n.State != StateProjects {
+		t.Errorf("State: got %q, want overridden to %q", n.State, StateProjects)
+	}
+}
+
 func TestLoadNote(t *testing.T) {
 	v := setupVault(t)
 	created, _ := v.Create("Load Me")

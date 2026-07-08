@@ -319,6 +319,28 @@ func (s sidebarModel) update(msg tea.KeyMsg) (sidebarModel, tea.Cmd) {
 	return s, nil
 }
 
+// sidebarContentX is the absolute column (from the terminal's left edge)
+// where sidebar row content begins: the outer border (1 char) plus the
+// row style's left padding (1 char, see Padding(0, 1) in render()).
+const sidebarContentX = 2
+
+// sidebarGlyphHit reports whether x (absolute, terminal-relative) falls on
+// an item's "▶"/"▼" expand/collapse indicator rather than its label text.
+// Column offsets mirror the literal prefixes built in render(): section rows
+// start with a 2-char glyph ("▶ "/"▼ "), project rows with a 2-space indent
+// then the 2-char glyph.
+func sidebarGlyphHit(item sidebarItem, x int) bool {
+	rel := x - sidebarContentX
+	switch {
+	case item.isSection:
+		return rel >= 0 && rel < 2
+	case item.isProjectEntry:
+		return rel >= 2 && rel < 4
+	default:
+		return false
+	}
+}
+
 func (s sidebarModel) render(width, height int, focused bool, openNoteID string) string {
 	t := activeTheme
 	accentColor := t.BorderNormal

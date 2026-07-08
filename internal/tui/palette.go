@@ -72,6 +72,11 @@ var allCommands = []cmdDef{
 		slots:   []slotKind{slotNote},
 	},
 	{
+		name: "search", sig: "<query>", desc: "Fuzzy search titles and content; ↑↓+Enter opens a hit, bare Enter opens the full results",
+		example: `:search dokcer`,
+		slots:   []slotKind{slotQuery},
+	},
+	{
 		name: "move", sig: "<note> → <state>", desc: "Promote or demote a note",
 		example: `:move docker → inbox`,
 		slots:   []slotKind{slotNote, slotArrow, slotState},
@@ -80,6 +85,16 @@ var allCommands = []cmdDef{
 		name: "archive", sig: "<note>", desc: "Move to Archive",
 		example: `:archive docker`,
 		slots:   []slotKind{slotNote},
+	},
+	{
+		name: "delete", sig: "<note>", desc: "Permanently delete a note (Ctrl+Z to undo)",
+		example: `:delete docker`,
+		slots:   []slotKind{slotNote},
+	},
+	{
+		name: "import", sig: "[path]", desc: "Import an external markdown file (opens a popover: path, move/copy, destination)",
+		example: `:import ~/notes/todo.md`,
+		slots:   []slotKind{slotNone},
 	},
 	{
 		name: "split", sig: "[note]", desc: "Open a new split pane",
@@ -146,6 +161,12 @@ type paletteModel struct {
 	projectNames []string      // active project names for slotProject autosuggest
 	varNames     []string      // configured variable names for slotVariable autosuggest
 	verbCtx      verbContext   // biases verb-suggestion order; zero value = declaration order
+
+	// searchNavigated is true once the user has pressed ↑/↓ in this palette
+	// session — for :search, that's what distinguishes "open the highlighted
+	// hit" (Enter after navigating) from "show the full results view" (bare
+	// Enter). Arrow keys are otherwise harmless to track for every command.
+	searchNavigated bool
 }
 
 // withVariables sets the variable names available for :insert var autosuggest.
@@ -322,6 +343,8 @@ func (p paletteModel) contextSuggestions() []ctxSuggestion {
 		return p.projectSuggestions(strings.TrimSpace(p.inputAfterVerb()))
 	case slotVariable:
 		return p.variableSuggestions(strings.TrimSpace(p.inputAfterVerb()))
+	case slotQuery:
+		return p.searchSuggestions(strings.TrimSpace(p.inputAfterVerb()))
 	}
 	return nil
 }
@@ -417,6 +440,42 @@ func (p paletteModel) variableSuggestions(fragment string) []ctxSuggestion {
 	return out
 }
 
+// searchSuggestions returns the top fuzzy title/content hits for the live
+// :search dropdown, most relevant first.
+func (p paletteModel) searchSuggestions(fragment string) []ctxSuggestion {
+	hits := searchHits(fragment, p.notes, maxContextRows)
+	out := make([]ctxSuggestion, len(hits))
+	for i, h := range hits {
+		desc := string(h.note.State)
+		if h.viaContent {
+			desc = "in content"
+		}
+		out[i] = ctxSuggestion{cmd: h.note.Title, desc: desc}
+	}
+	return out
+}
+
+// navigatedSearchNote returns the note the user explicitly arrowed to in a
+// :search dropdown, if any — the signal that Enter should open it directly
+// rather than opening the full results view.
+func (p paletteModel) navigatedSearchNote() (*vault.Note, bool) {
+	def, ok := p.currentCmdDef()
+	if !ok || def.name != "search" || !p.searchNavigated {
+		return nil, false
+	}
+	sug := p.contextSuggestions()
+	if p.selected < 0 || p.selected >= len(sug) {
+		return nil, false
+	}
+	title := sug[p.selected].cmd
+	for _, n := range p.notes {
+		if n.Title == title {
+			return n, true
+		}
+	}
+	return nil, false
+}
+
 func (p paletteModel) projectSuggestions(fragment string) []ctxSuggestion {
 	fl := strings.ToLower(fragment)
 	var out []ctxSuggestion
@@ -471,6 +530,7 @@ func (p paletteModel) update(msg tea.KeyMsg) (paletteModel, tea.Cmd) {
 	case "ctrl+c":
 		p.input = ""
 		p.selected = 0
+		p.searchNavigated = false
 
 	case "tab", "right":
 		p = p.tabComplete()
@@ -478,11 +538,13 @@ func (p paletteModel) update(msg tea.KeyMsg) (paletteModel, tea.Cmd) {
 	case "up", "ctrl+p":
 		if n := p.navLen(); n > 0 {
 			p.selected = (p.selected - 1 + n) % n
+			p.searchNavigated = true
 		}
 
 	case "down", "ctrl+n":
 		if n := p.navLen(); n > 0 {
 			p.selected = (p.selected + 1) % n
+			p.searchNavigated = true
 		}
 
 	case "backspace", "ctrl+h":
@@ -490,16 +552,19 @@ func (p paletteModel) update(msg tea.KeyMsg) (paletteModel, tea.Cmd) {
 			runes := []rune(p.input)
 			p.input = string(runes[:len(runes)-1])
 			p.selected = 0
+			p.searchNavigated = false
 		}
 
 	case "ctrl+u":
 		p.input = ""
 		p.selected = 0
+		p.searchNavigated = false
 
 	default:
 		if len(msg.Runes) == 1 {
 			p.input += string(msg.Runes)
 			p.selected = 0
+			p.searchNavigated = false
 		}
 	}
 	return p, nil

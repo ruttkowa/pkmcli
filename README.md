@@ -99,7 +99,7 @@ Active whenever no overlay above has captured input.
 |---|---|
 | `:` or **Palette** (`Ctrl+Space`) | Open the command palette |
 | `?` | Toggle the Help view |
-| `Tab` | Switch focus: Sidebar ↔ Main pane |
+| `Tab` / `Shift+Tab` | Switch focus: Sidebar ↔ Main pane |
 | **Pane picker** (`Ctrl+P`) | Open the pane picker |
 | **Next pane** (`Ctrl+W`) | Cycle to the next split (only shown once you have >1) |
 | **Undo** (`Ctrl+Z`) | Undo the last note save |
@@ -109,11 +109,13 @@ Active whenever no overlay above has captured input.
 | `N` | Palette prefilled `new ` |
 | `O` / `S` | Palette prefilled `open ` |
 | `A` | Palette prefilled `archive ` (+ current note title, if one is open) |
+| `D` | Palette prefilled `delete ` (+ current note title, if one is open) |
 | `M` | Palette prefilled `move ` (+ `<title> → `, if one is open) |
 | `T` | Palette prefilled `insert ` (template insert) |
 | `P` | Palette prefilled `add project ` |
+| `I` | Open the **Import** popover directly (not via the palette) |
 
-Mouse: left-click is supported throughout (sidebar items, note-list rows, `[[links]]` in the viewer). There's no scroll-wheel support anywhere yet — use `j`/`k`.
+Mouse: left-click is supported throughout (sidebar items, note-list rows, `[[links]]` and checkboxes in the viewer). The scroll wheel scrolls whichever pane (sidebar, note list, viewer, help) is under the cursor, without changing focus.
 
 ### Sidebar
 
@@ -124,6 +126,8 @@ Mouse: left-click is supported throughout (sidebar items, note-list rows, `[[lin
 | `→` | Expand section / project folder |
 | `←` | Collapse section / project folder |
 | `Enter` | Open note, or toggle a project/section and show its detail/landing page |
+
+Mouse: clicking a row's `▶`/`▼` glyph toggles expand/collapse only; clicking anywhere else on the row always shows that row's view (section landing, project detail, or note), leaving the expanded state untouched.
 
 ### Note List
 
@@ -139,12 +143,23 @@ The note-list view (search results, section browsing).
 
 | Key | Action |
 |---|---|
-| `j` / `↓` | Scroll down |
-| `k` / `↑` | Scroll up |
+| `j` | Scroll down |
+| `k` | Scroll up |
+| `↑` `↓` `←` `→` | Move the block cursor through the rendered text, character by character (see below) |
+| `Enter` | Act on whatever the block cursor is over |
 | `[` / `Alt+←` | Back in this pane's note history |
 | `]` / `Alt+→` | Forward in pane history |
 | `Esc` / `Backspace` | Back (pops history; returns to the note list once history is empty) |
 | Click a `[[link]]` | Open it — creates the note first if it doesn't exist yet |
+| Click a `- [ ]` checkbox | Toggle it and save |
+
+**Block cursor:** a solid (non-blinking) cursor that moves through the rendered note independently of `j`/`k` scrolling, auto-scrolling the viewer when it reaches the edge. When it sits on a link, checkbox, or fenced code block, that element is highlighted. `Enter` then:
+
+- on a **link** — opens the linked note (creating it first if it doesn't exist)
+- on a **checkbox** — toggles `- [ ]` ↔ `- [x]` and saves
+- on a **code block** — copies its contents to the clipboard via OSC 52 (works over SSH and inside tmux/zellij)
+
+The bottom row of the pane is a fixed footer showing `Last saved: HH:MM:SS` (from the note's `updated` frontmatter field) alongside the scroll percentage — not shown in the global hotkey bar.
 
 ### Editor
 
@@ -173,6 +188,8 @@ Typing inside an unclosed `[[fragment]]` opens a link-autosuggest dropdown:
 | `Tab` / `Enter` | Accept the highlighted suggestion |
 | `Esc` | Dismiss suggestions only — the editor itself stays open |
 
+The footer row shows word/line counts plus `Last saved: HH:MM:SS`; while the draft differs from the saved note (body, tags, project, or state), an `● Unsaved changes` marker appears next to it. This footer — not the global hotkey bar — is where save state lives.
+
 ### Project Detail
 
 Browsing a project's attached notes and history:
@@ -200,6 +217,23 @@ Opened with `:config`. `Tab` / `Shift+Tab` cycle its three tabs; `Esc` saves eve
 **Keybindings** — `↑`/`↓` selects an action, `Enter` starts capture ("press ctrl/alt + a key…"), `d` resets that action to its default. Only `Ctrl`/`Alt` chords are accepted while capturing, so you can't accidentally shadow a plain letter used elsewhere.
 
 **Variables** — `↑`/`↓` selects a variable (or the **+ Add variable** row), `Enter` adds a new one or edits an existing value, `d` deletes.
+
+### Import Popover
+
+Opened with `I` or `:import [path]`. Imports an external markdown file into the vault as a new note, renamed to the `<ID> <Title>.md` convention (title taken from the source filename) with fresh `id`/`created`/`updated`/`state` — any existing `tags:` in the source file's frontmatter are preserved.
+
+| Key | Action |
+|---|---|
+| `Tab` / `Shift+Tab` | Move between Path → Mode → Destination → Import |
+| (Path field) typing | Live directory-listing suggestions (dirs and `.md` files, filtered as you type) |
+| (Path field) `↑`/`↓` | Select a suggestion |
+| (Path field) `Enter` | Accept the highlighted suggestion |
+| (Mode field) `Space` | Toggle Move ↔ Copy — **default: Move** (source file is removed after import) |
+| (Destination field) `←`/`→` or `Enter` | Cycle the destination state (default: Inbox) |
+| (Import field) `Enter` | Run the import |
+| `Esc` | Cancel — nothing on disk changes |
+
+On success the popover closes and the imported note opens in the active pane. On failure (e.g. bad path) an error shows inside the popover and it stays open so you can correct it.
 
 ### Pane Picker
 
@@ -247,8 +281,11 @@ The verb list reorders a little depending on where you opened it from — e.g. o
 | `:insert <name>` | Insert a template into the open note | `T` |
 | `:insert var <name>` | Insert a variable's value at the cursor — edit mode only | — |
 | `:open <query>` | Open by title; else full-text search; `#tag` filters by tag | `O` / `S` |
+| `:search <query>` | Fuzzy search titles and content, with a live-ranked dropdown as you type | — |
 | `:move <note> → <state>` | Move a note to a state (`->` also accepted) | `M` |
 | `:archive <note>` | Shortcut for `:move <note> → archive` | `A` |
+| `:delete <note>` | Permanently delete a note (`Ctrl+Z` undoes it — see note below) | `D` |
+| `:import [path]` | Open the import popover (path pre-filled if given) — see note below | `I` (opens directly, no palette) |
 | `:split [note]` | Open a new side-by-side pane, optionally pre-loaded | — |
 | `:close` | Close the focused pane (blocked if it's the last one) | — |
 | `:theme <name>` | `nord` · `solarized` · `dracula` · `gruvbox` · `tokyonight` | — |
@@ -263,6 +300,12 @@ The verb list reorders a little depending on where you opened it from — e.g. o
 > `:new project` and `:add project` are **not** aliases of each other, despite the similar names: `new project` only creates the project; `add project` is what actually attaches your currently-open note to one.
 
 **`:open` resolution:** exact title match → opens directly · no match → full-text search → shows a result list · `#tag` prefix → tag filter.
+
+**`:search` resolution:** the dropdown ranks fuzzy title matches first, then plain content matches, live as you type. Arrow to a hit and press `Enter` to open it directly; press `Enter` without arrowing to open every hit as a list instead. `Esc` out of a note opened either way returns to that list — not a fresh search.
+
+**`:delete` is permanent** (the file is removed from disk) but safety-netted: it's pushed onto the same undo stack as edits, so `Ctrl+Z` immediately after recreates the file. There's no confirmation prompt, so double-check the note name in the palette before pressing Enter.
+
+**`:import`** reads an external `.md` file and adds it as a new note — see [Import Popover](#import-popover) for the full field-by-field walkthrough. Default is **Move** (the source file is deleted after a successful import); toggle to **Copy** with `Space` on the Mode field to leave the source in place.
 
 **Valid states for `:move`:** `inbox` · `projects` · `areas` · `research` · `archive`
 
@@ -534,6 +577,7 @@ go test ./...
 | Argument type | Match rule | Source |
 |---------------|-----------|--------|
 | Note / template title | Substring, case-insensitive | All vault notes, sorted by last updated |
+| Search query | Fuzzy subsequence match on title, ranked above plain substring matches on content | All vault notes |
 | State | Prefix, case-insensitive | Fixed list |
 | Theme | Prefix, case-insensitive | Fixed list |
 | Project name | Prefix, case-insensitive | Active projects in `projects.yaml` |

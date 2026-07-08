@@ -49,10 +49,14 @@ func (m *Model) handleCommand(raw string) (string, tea.Cmd) {
 		return m.cmdInsert(args)
 	case "open":
 		return m.cmdOpen(args)
+	case "search":
+		return m.cmdSearch(args)
 	case "move":
 		return m.cmdMove(raw)
 	case "archive":
 		return m.cmdArchive(args)
+	case "delete":
+		return m.cmdDelete(args)
 	case "split":
 		return m.cmdSplit(args)
 	case "close":
@@ -61,6 +65,8 @@ func (m *Model) handleCommand(raw string) (string, tea.Cmd) {
 		return m.cmdTheme(args)
 	case "config":
 		return m.cmdConfig(args)
+	case "import":
+		return m.cmdImport(args)
 	case "help":
 		return m.cmdHelp()
 	case "quit", "exit", "q":
@@ -135,6 +141,28 @@ func (m *Model) showSearchResults(ids []string, query string) (string, tea.Cmd) 
 		}
 	}
 	m.noteList = m.noteList.withNotes(results)
+	m.searchResults = results
+	m.splits[m.activeSplit].activeView = viewList
+	return fmt.Sprintf("%d result(s) for %q", len(results), query), nil
+}
+
+// cmdSearch fuzzy-searches titles and content across the whole vault and
+// shows every hit as a list (reusing the note list view, exactly like
+// cmdOpen's full-text fallback) — the "no explicit pick" path from the
+// palette's live dropdown. m.searchResults marks the list so opening a note
+// from it remembers to return here on "back" (see splitPane.searchReturn).
+func (m *Model) cmdSearch(args []string) (string, tea.Cmd) {
+	if len(args) == 0 {
+		return "usage: :search <query>", nil
+	}
+	query := strings.Join(args, " ")
+	all, _ := m.vault.ListAll()
+	results := fuzzySearchNotes(query, all)
+	if len(results) == 0 {
+		return fmt.Sprintf("not found: %q", query), nil
+	}
+	m.noteList = m.noteList.withNotes(results)
+	m.searchResults = results
 	m.splits[m.activeSplit].activeView = viewList
 	return fmt.Sprintf("%d result(s) for %q", len(results), query), nil
 }
@@ -223,6 +251,48 @@ func (m *Model) cmdArchive(args []string) (string, tea.Cmd) {
 	return refreshCounts(m), nil
 }
 
+// cmdDelete permanently removes a note's file from the vault. The note is
+// snapshotted to the undo stack first (Save recreates the file), so Ctrl+Z
+// is the safety net rather than a confirmation prompt.
+func (m *Model) cmdDelete(args []string) (string, tea.Cmd) {
+	if len(args) == 0 {
+		return "usage: :delete <note>", nil
+	}
+	query := strings.Join(args, " ")
+	n, err := m.vault.FindByTitle(query)
+	if err != nil {
+		return fmt.Sprintf("not found: %q", query), nil
+	}
+	if n.State == vault.StateProjects && n.Project != "" {
+		m.recordDetach(n)
+	}
+	oldNote := *n
+	if err := m.vault.Delete(n); err != nil {
+		return fmt.Sprintf("error: %v", err), nil
+	}
+	m.index.Delete(n.ID)
+	delete(m.titleSet, strings.ToLower(n.Title))
+
+	m.undoStack = append(m.undoStack, undoRecord{oldNote: oldNote, newNote: oldNote})
+	if len(m.undoStack) > 20 {
+		m.undoStack = m.undoStack[1:]
+	}
+	m.redoStack = nil
+
+	// Any split showing the deleted note falls back to the list view.
+	for i := range m.splits {
+		if m.splits[i].viewer.note != nil && m.splits[i].viewer.note.ID == n.ID {
+			m.splits[i].activeView = viewList
+			m.splits[i].viewer = newViewer()
+			m.splits[i].history = nil
+			m.splits[i].histIdx = -1
+		}
+	}
+
+	refreshCounts(m)
+	return "deleted: " + n.Title, nil
+}
+
 func (m *Model) cmdSplit(args []string) (string, tea.Cmd) {
 	sp := newSplitPane()
 	if len(args) > 0 {
@@ -304,6 +374,47 @@ func (m *Model) cmdConfig(args []string) (string, tea.Cmd) {
 		return m.cmdConfigImport(args[1:])
 	}
 	return fmt.Sprintf("unknown config key: %q", args[0]), nil
+}
+
+// cmdImport opens the :import popover, pre-filling the path field if one was
+// given on the command line (the actual file read/move happens in
+// Model.runImport once the user confirms in the popover).
+func (m *Model) cmdImport(args []string) (string, tea.Cmd) {
+	m.showImport = true
+	m.importView = newImportPane()
+	if len(args) > 0 {
+		path := strings.Join(args, " ")
+		m.importView.pathInput.SetValue(path)
+		m.importView.pathInput.CursorEnd()
+		m.importView.suggestions = pathSuggestions(path)
+	}
+	return "", nil
+}
+
+// runImport executes the import described by m.importView once confirmed,
+// closing the popover on success or leaving it open with an error message
+// on failure so the user can correct the path and retry.
+func (m *Model) runImport() {
+	path := strings.TrimSpace(m.importView.pathInput.Value())
+	if path == "" {
+		m.importView.errMsg = "enter a file path"
+		m.importView.confirmed = false
+		return
+	}
+	state := vault.AllStates[m.importView.destIdx]
+	n, err := m.vault.Import(path, state, m.importView.move)
+	if err != nil {
+		m.importView.errMsg = "import error: " + err.Error()
+		m.importView.confirmed = false
+		return
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+	m.showImport = false
+	m.splits[m.activeSplit].openNote(n)
+	l := m.computeLayout()
+	m.splits[m.activeSplit].viewer = m.splits[m.activeSplit].viewer.preRender(l.paneWidth, m.titleSet)
+	m.statusMsg = refreshCounts(m)
 }
 
 func (m *Model) cmdConfigExport(args []string) (string, tea.Cmd) {

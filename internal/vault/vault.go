@@ -66,6 +66,44 @@ func (v *Vault) Create(title string) (*Note, error) {
 	return n, v.Save(n)
 }
 
+// Import reads an external markdown file into the vault as a new note,
+// preserving any existing frontmatter tags but always assigning a fresh
+// ID/Created/Updated/State, since the source is unlikely to already match
+// this vault's schema. If move is true, the source file is removed after a
+// successful write; otherwise it's left in place (copy).
+func (v *Vault) Import(srcPath string, state NoteState, move bool) (*Note, error) {
+	raw, err := os.ReadFile(srcPath)
+	if err != nil {
+		return nil, err
+	}
+	n := &Note{}
+	if err := parseNote(raw, n); err != nil {
+		return nil, err
+	}
+	if n.Tags == nil {
+		n.Tags = []string{}
+	}
+
+	title := strings.TrimSuffix(filepath.Base(srcPath), filepath.Ext(srcPath))
+	now := time.Now().Truncate(time.Second)
+	n.ID = GenerateID()
+	n.Title = title
+	n.Created = now
+	n.Updated = now
+	n.State = state
+	n.Path = filepath.Join(v.NotesDir(), Filename(n.ID, title))
+
+	if err := v.Save(n); err != nil {
+		return nil, err
+	}
+	if move {
+		if err := os.Remove(srcPath); err != nil {
+			return nil, err
+		}
+	}
+	return n, nil
+}
+
 // Save writes a note back to disk, updating the Updated timestamp.
 func (v *Vault) Save(n *Note) error {
 	n.Updated = time.Now().Truncate(time.Second)
@@ -74,6 +112,11 @@ func (v *Vault) Save(n *Note) error {
 		return err
 	}
 	return os.WriteFile(n.Path, data, 0o644)
+}
+
+// Delete removes a note's file from disk.
+func (v *Vault) Delete(n *Note) error {
+	return os.Remove(n.Path)
 }
 
 // Load reads a single .md file and returns a Note.

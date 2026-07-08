@@ -8,17 +8,32 @@ import (
 )
 
 const helpContent = `NAVIGATION
-  j / ↓       move down
-  k / ↑       move up
-  Tab         switch focus: Sidebar ↔ Main pane
+  j / k       scroll the note viewer down / up
+  Tab / Shift+Tab  switch focus: Sidebar ↔ Main pane
   Ctrl+W      cycle to next split pane
   Ctrl+P      open pane picker
   Enter       open note / expand section
-  ←           collapse section (sidebar)
+  ←           collapse section (sidebar) / glyph toggles a row's expand state
   →           expand section (sidebar)
   [  Alt+←    navigate back in pane history
   ]  Alt+→    navigate forward in pane history
   Esc         go back / close overlay
+  Mouse wheel scrolls whichever pane (sidebar, note list, viewer, help) is
+  under the cursor, without changing which pane has focus.
+
+VIEW MODE CURSOR
+  While reading a note, ↑ ↓ ← → move a solid block cursor character-by-
+  character through the rendered text (independent of j/k scrolling, which
+  still just scrolls). Moving off-screen scrolls the viewer to follow it.
+  When the cursor sits on a link, checkbox, or fenced code block, that
+  element is highlighted. Press Enter to act on it:
+    - link      → open the linked note (creating it if it doesn't exist)
+    - checkbox  → toggle "- [ ]" / "- [x]" and save
+    - code block → copy its contents to the clipboard (OSC 52; works over
+                    SSH and inside tmux/zellij)
+  Clicking a link or checkbox with the mouse does the same thing directly.
+  The viewer's bottom row is a fixed footer: "Last saved: HH:MM:SS" plus
+  scroll %. This is separate from the hotkey bar below the pane.
 
 READING & EDITING
   e           open current note in the editor
@@ -30,6 +45,22 @@ READING & EDITING
   in the editor. Any other command (e.g. :archive, :move) saves the
   draft first, then runs normally and exits to the viewer.
 
+  The editor's footer row shows word/line counts and "Last saved:
+  HH:MM:SS"; an "● Unsaved changes" marker appears next to it whenever
+  the draft (body, tags, project, or state) differs from the saved note.
+
+IMPORT POPOVER  —  I or :import [path]
+  Path field    type or arrow-select a suggestion (live directory listing,
+                dirs and .md files, filtered as you type)
+  Tab/Shift+Tab move between Path → Mode → Destination → Import
+  Space         toggle Move ↔ Copy while the Mode field is focused
+                (default: Move — the source file is removed after import)
+  ←/→           cycle the destination state while Destination is focused
+  Enter         on Path: accept the highlighted suggestion
+                on Destination: cycle forward
+                on Import: run the import
+  Esc           cancel, no changes made
+
 COMMAND PALETTE  —  press : or Ctrl+Space to open
   :new "Title"              create note in Inbox
   :new project <name>       create a new project (does not assign the open note)
@@ -39,8 +70,15 @@ COMMAND PALETTE  —  press : or Ctrl+Space to open
   :insert <name>            insert a template into the current note
   :insert var <name>        insert a variable's value at the cursor (edit mode)
   :open <query>             open by title; or full-text search; or #tag filter
+  :search <query>           fuzzy search titles and content
+                            ↑↓ to a hit + Enter opens it directly; a bare
+                            Enter opens every hit as a list (Esc from a note
+                            opened this way returns to that list)
   :move <note> → <state>    move note to a state
   :archive <note>           archive a note
+  :delete <note>            permanently delete a note (Ctrl+Z to undo)
+  :import [path]            open the import popover (path autocomplete,
+                            move/copy toggle, destination state)
   :split [note]             open a new side-by-side pane
   :close                    close the focused pane
   :config                   open settings (General / Keybindings / Variables)
@@ -56,9 +94,10 @@ QUIT
   Ctrl+Q                    save session and quit
   Ctrl+D                    save session and quit (Unix EOF convention)
 
-SHIFT SHORTCUTS  (open palette pre-filled)
+SHIFT SHORTCUTS  (open palette pre-filled, except I which opens directly)
   N  :new       O/S  :open      A  :archive
   M  :move      T    :insert    P  :add project
+  D  :delete    I    :import (opens the popover directly, no palette)
 
 CTRL SHORTCUTS
   Ctrl+C  cancel / close    same as Esc in every mode

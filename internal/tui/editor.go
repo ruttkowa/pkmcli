@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	xansi "github.com/charmbracelet/x/ansi"
 )
 
 const (
@@ -23,6 +24,9 @@ const (
 )
 
 var numberedListRe = regexp.MustCompile(`^(\d+)\. `)
+var headingLineRe = regexp.MustCompile(`^#{1,6}( |$)`)
+
+const headingGutterMarker = "▎"
 
 type focusedField int
 
@@ -108,6 +112,81 @@ func newEditPane(n *vault.Note, width, height int, notes []*vault.Note, lineNumb
 	}, focusCmd
 }
 
+// dirty reports whether the draft differs from the last-saved note, across
+// every editable field, not just the body.
+func (e editPane) dirty() bool {
+	if e.ta.Value() != e.note.Body {
+		return true
+	}
+	if vault.AllStates[e.stateIdx] != e.note.State {
+		return true
+	}
+	if strings.TrimSpace(e.projInput.Value()) != e.note.Project {
+		return true
+	}
+	tags := parseTags(e.tagsInput.Value())
+	if len(tags) != len(e.note.Tags) {
+		return true
+	}
+	for i, t := range tags {
+		if t != e.note.Tags[i] {
+			return true
+		}
+	}
+	return false
+}
+
+// footerText builds the editor's status line, degrading gracefully when the
+// pane is too narrow for the full text — a hard-wrapped footer would push
+// the pane's rendered height past its allotted box (see calcBodyHeight,
+// which reserves exactly editFooterRows=1 for this line), desyncing the
+// border. Each stage drops the least essential segment first; the final
+// xansi.Truncate is a hard safety net for pathologically narrow panes.
+func (e editPane) footerText(width, totalLines int) string {
+	saved := e.note.Updated.Format("15:04:05")
+	dirty := e.dirty()
+
+	build := func(unsaved, saveLabel, counts, hint string) string {
+		parts := make([]string, 0, 4)
+		if unsaved != "" {
+			parts = append(parts, unsaved)
+		}
+		if saveLabel != "" {
+			parts = append(parts, saveLabel)
+		}
+		if counts != "" {
+			parts = append(parts, counts)
+		}
+		if hint != "" {
+			parts = append(parts, hint)
+		}
+		return "  " + strings.Join(parts, "   ")
+	}
+
+	unsavedFull := ""
+	unsavedShort := ""
+	if dirty {
+		unsavedFull = lipgloss.NewStyle().Foreground(activeTheme.Cursor).Bold(true).Render("●  Unsaved changes")
+		unsavedShort = lipgloss.NewStyle().Foreground(activeTheme.Cursor).Bold(true).Render("●")
+	}
+	saveLabel := "Last saved: " + saved
+	counts := fmt.Sprintf("Words: %d  Lines: %d", e.wordCount, totalLines)
+	hint := "Tab: cycle fields"
+
+	candidates := []string{
+		build(unsavedFull, saveLabel, counts, hint),
+		build(unsavedFull, saveLabel, counts, ""),
+		build(unsavedShort, saveLabel, counts, ""),
+		build(unsavedShort, saveLabel, "", ""),
+	}
+	for _, c := range candidates {
+		if lipgloss.Width(c) <= width {
+			return c
+		}
+	}
+	return xansi.Truncate(candidates[len(candidates)-1], width, "")
+}
+
 // bodyHeight returns the correct textarea height accounting for active suggestions.
 func (e editPane) bodyHeight() int {
 	h := calcBodyHeight(e.contentHeight)
@@ -149,8 +228,10 @@ func applyEditTheme(ta *textarea.Model) {
 		EndOfBuffer:      lipgloss.NewStyle().Foreground(activeTheme.TextDim).Background(bg),
 		LineNumber:       lipgloss.NewStyle().Foreground(activeTheme.TextDim).Background(bg),
 		Placeholder:      lipgloss.NewStyle().Foreground(activeTheme.TextMuted).Background(bg),
-		Prompt:           lipgloss.NewStyle().Foreground(activeTheme.TextDim).Background(bg),
-		Text:             lipgloss.NewStyle().Foreground(activeTheme.TextPrimary).Background(bg),
+		// Accent so the heading gutter marker (see headingPromptFunc) pops;
+		// harmless for the blank-space prompt used on non-heading lines.
+		Prompt: lipgloss.NewStyle().Foreground(activeTheme.Accent).Bold(true).Background(bg),
+		Text:   lipgloss.NewStyle().Foreground(activeTheme.TextPrimary).Background(bg),
 	}
 	ta.BlurredStyle = textarea.Style{
 		Base:             lipgloss.NewStyle().Background(bg),
@@ -162,6 +243,41 @@ func applyEditTheme(ta *textarea.Model) {
 		Prompt:           lipgloss.NewStyle().Foreground(activeTheme.TextDim).Background(bg),
 		Text:             lipgloss.NewStyle().Foreground(activeTheme.TextMuted).Background(bg),
 	}
+}
+
+// headingPromptFunc marks heading lines with a gutter glyph instead of the
+// default blank prompt — the closest we can get to "on the fly" heading
+// emphasis without forking bubbles/textarea, which only exposes one style
+// per row (cursor-line vs. text) and no per-content hook. Row-count math
+// approximates the component's own word-wrap (exact wrap breakpoints don't
+// matter here, only which display row each raw line starts on).
+func headingPromptFunc(value string, width int) func(int) string {
+	lines := strings.Split(value, "\n")
+	return func(displayLine int) string {
+		d := 0
+		for _, line := range lines {
+			rows := approxWrapRows(line, width)
+			if displayLine < d+rows {
+				if displayLine == d && headingLineRe.MatchString(line) {
+					return headingGutterMarker
+				}
+				return " "
+			}
+			d += rows
+		}
+		return " "
+	}
+}
+
+func approxWrapRows(line string, width int) int {
+	if width <= 0 {
+		return 1
+	}
+	w := lipgloss.Width(line)
+	if w == 0 {
+		return 1
+	}
+	return (w + width - 1) / width
 }
 
 func (e editPane) update(msg tea.Msg) (editPane, tea.Cmd) {
@@ -283,9 +399,16 @@ func (e editPane) updateBody(km tea.KeyMsg) (editPane, tea.Cmd) {
 		return e, nil
 
 	case "`":
-		if after == '`' {
+		before := textBeforeCursor(e.ta)
+		switch {
+		case strings.HasSuffix(before, "``") && after != '`':
+			// Completing a fence: "``" + this "`" == "```". Expand into a
+			// full fenced block instead of autoclosing a 4th backtick.
+			e.ta.InsertString("`\n\n```")
+			e.ta, _ = e.ta.Update(tea.KeyMsg{Type: tea.KeyUp})
+		case after == '`':
 			e.ta, _ = e.ta.Update(tea.KeyMsg{Type: tea.KeyRight})
-		} else {
+		default:
 			e.ta.InsertRune('`')
 			e.ta.InsertRune('`')
 			e.ta, _ = e.ta.Update(tea.KeyMsg{Type: tea.KeyLeft})
@@ -464,6 +587,8 @@ func (e editPane) cycleField(dir int) (editPane, tea.Cmd) {
 }
 
 func (e editPane) render(width, height int) string {
+	e.ta.SetPromptFunc(1, headingPromptFunc(e.ta.Value(), e.ta.Width()))
+
 	bg := activeTheme.Bg
 	labelStyle := lipgloss.NewStyle().Foreground(activeTheme.TextMuted).Background(bg)
 	activeLabelStyle := lipgloss.NewStyle().Foreground(activeTheme.Accent).Background(bg)
@@ -490,7 +615,7 @@ func (e editPane) render(width, height int) string {
 		Foreground(activeTheme.TextDim).
 		Background(activeTheme.StatusBg).
 		Width(width).
-		Render(fmt.Sprintf("  Words: %d  Lines: %d  Tab: cycle fields", e.wordCount, totalLines))
+		Render(e.footerText(width, totalLines))
 
 	parts := []string{titleRow, stateRow, tagsRow, projRow, sep, e.ta.View()}
 
@@ -540,6 +665,21 @@ func charAfterCursor(ta textarea.Model) rune {
 		return 0
 	}
 	return runes[col]
+}
+
+// textBeforeCursor returns the current line's text up to the cursor column.
+func textBeforeCursor(ta textarea.Model) string {
+	lineIdx := ta.Line()
+	lines := strings.Split(ta.Value(), "\n")
+	if lineIdx >= len(lines) {
+		return ""
+	}
+	runes := []rune(lines[lineIdx])
+	col := ta.LineInfo().CharOffset
+	if col > len(runes) {
+		col = len(runes)
+	}
+	return string(runes[:col])
 }
 
 func countWords(s string) int {

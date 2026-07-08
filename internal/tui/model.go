@@ -82,7 +82,20 @@ type Model struct {
 	showConfig bool
 	configView configPane
 
+	showImport bool
+	importView importPane
+
 	titleSet map[string]bool // lowercase note titles → used for link existence checks
+
+	// searchResults is non-nil exactly when m.noteList currently displays a
+	// :search (or :open's search-fallback) result set — opening a note from
+	// that list marks the split so "back" can restore the results (see
+	// splitPane.searchReturn) instead of falling through to whatever was
+	// open before the search. Sticky by design: only cleared by a fresh
+	// search or notesLoadedMsg. Correct today because nothing else populates
+	// m.noteList; if a future "browse as list" path is added, it must clear
+	// this field or its notes will be wrongly treated as search results.
+	searchResults []*vault.Note
 }
 
 func (m Model) computeLayout() layout {
@@ -166,7 +179,6 @@ func (m *Model) commitEditorDraft(sp *splitPane) {
 		sp.viewer = sp.viewer.withNote(n)
 		l := m.computeLayout()
 		sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
-		m.statusMsg = "saved: " + n.Title
 	}
 	sp.editor = editPane{}
 	sp.activeView = viewNote
@@ -246,8 +258,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resizeOpenEditors(m.computeLayout())
 
 	case tea.MouseMsg:
-		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-			m.handleMouseClick(msg.X, msg.Y)
+		if msg.Action == tea.MouseActionPress {
+			switch msg.Button {
+			case tea.MouseButtonLeft:
+				m.handleMouseClick(msg.X, msg.Y)
+			case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
+				m.handleMouseWheel(msg.X, msg.Button)
+			}
 		}
 
 	case tea.KeyMsg:
@@ -267,6 +284,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if sp := &m.splits[m.activeSplit]; sp.activeView == viewEdit && !isLiveEditCommand(raw) {
 						m.commitEditorDraft(sp)
 					}
+				}
+				// :search is special-cased: if the user arrowed to a dropdown
+				// hit before pressing Enter, open it directly instead of
+				// running :search as a text command (which would show the
+				// full results view — see cmdSearch). Populate the results
+				// list first (same query) so back-navigation out of the note
+				// still lands on the results, exactly as if :search had run.
+				if n, ok := m.palette.navigatedSearchNote(); ok {
+					query := strings.TrimSpace(m.palette.inputAfterVerb())
+					all, _ := m.vault.ListAll()
+					results := fuzzySearchNotes(query, all)
+					m.noteList = m.noteList.withNotes(results)
+					m.searchResults = results
+					sp := &m.splits[m.activeSplit]
+					sp.openNoteFromSearch(n, results)
+					l := m.computeLayout()
+					sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+					m.statusMsg = "opened: " + n.Title
+					m.showPalette = false
+					m.resizeOpenEditors(m.computeLayout())
+					return m, tea.Batch(cmds...)
 				}
 				result, cmd := m.handleCommand(raw)
 				if result != "" {
@@ -366,6 +404,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Import overlay captures all input.
+		if m.showImport {
+			m.importView = m.importView.update(msg)
+			if m.importView.cancelled {
+				m.showImport = false
+				return m, nil
+			}
+			if m.importView.confirmed {
+				m.runImport()
+				if !m.showImport {
+					m.resizeOpenEditors(m.computeLayout())
+				}
+			}
+			return m, nil
+		}
+
 		m.statusMsg = ""
 
 		// Pane picker mode captures all input.
@@ -449,6 +503,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.palette = newPaletteWithInput(input, sortedNotes(m.vault), m.vault.Projects.ActiveNames()).withVariables(m.variableNames())
 			return m, nil
 
+		case "D":
+			m.showPalette = true
+			input := "delete "
+			if n := m.splits[m.activeSplit].viewer.note; m.splits[m.activeSplit].activeView == viewNote && n != nil {
+				input += n.Title
+			}
+			m.palette = newPaletteWithInput(input, sortedNotes(m.vault), m.vault.Projects.ActiveNames()).withVariables(m.variableNames())
+			return m, nil
+
 		case "M":
 			m.showPalette = true
 			input := "move "
@@ -468,6 +531,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.palette = newPaletteWithInput("add project ", sortedNotes(m.vault), m.vault.Projects.ActiveNames()).withVariables(m.variableNames())
 			return m, nil
 
+		case "I":
+			m.showImport = true
+			m.importView = newImportPane()
+			return m, nil
+
 		case "e":
 			sp := &m.splits[m.activeSplit]
 			if sp.activeView == viewNote && sp.viewer.note != nil {
@@ -479,7 +547,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 
-		case "tab":
+		case "tab", "shift+tab":
 			if m.activePane == paneMain {
 				m.activePane = paneSidebar
 			} else {
@@ -536,7 +604,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.noteList, cmd = m.noteList.update(msg)
 				cmds = append(cmds, cmd)
 				if m.noteList.chosen != nil {
-					sp.openNote(m.noteList.chosen)
+					if m.searchResults != nil {
+						sp.openNoteFromSearch(m.noteList.chosen, m.searchResults)
+					} else {
+						sp.openNote(m.noteList.chosen)
+					}
 					l := m.computeLayout()
 					sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
 					m.noteList.chosen = nil
@@ -554,17 +626,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
 					}
 				default:
+					l := m.computeLayout()
 					var cmd tea.Cmd
-					sp.viewer, cmd = sp.viewer.update(msg)
+					sp.viewer, cmd = sp.viewer.update(msg, l.contentHeight)
 					cmds = append(cmds, cmd)
 					if sp.viewer.back {
 						sp.viewer.back = false
-						if !sp.back() {
-							sp.activeView = viewList
-						} else {
+						if sp.back() {
 							l := m.computeLayout()
 							sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+						} else if sp.searchReturn != nil {
+							m.noteList = m.noteList.withNotes(sp.searchReturn)
+							m.searchResults = sp.searchReturn
+							sp.activeView = viewList
+						} else {
+							sp.activeView = viewList
 						}
+					}
+					if target := sp.viewer.pendingLinkOpen; target != "" {
+						sp.viewer.pendingLinkOpen = ""
+						m.openOrCreateNote(target)
+					}
+					if sp.viewer.pendingCheckboxRaw >= 0 {
+						raw := sp.viewer.pendingCheckboxRaw
+						sp.viewer.pendingCheckboxRaw = -1
+						m.applyCheckboxToggle(sp, raw)
+					}
+					if content := sp.viewer.pendingCodeCopy; content != "" {
+						sp.viewer.pendingCodeCopy = ""
+						cmds = append(cmds, copyToClipboardCmd(content))
+						m.statusMsg = "copied code block"
 					}
 				}
 			case viewProjectDetail:
@@ -626,6 +717,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case notesLoadedMsg:
 		m.noteList = m.noteList.withNotes(msg.notes)
+		m.searchResults = nil
 		m.splits[m.activeSplit].activeView = viewList
 
 	case countsRefreshedMsg:
@@ -726,57 +818,74 @@ func (m *Model) handleMouseClick(x, y int) {
 		item := items[itemIdx]
 		m.activePane = paneSidebar
 
+		// Clicking the "▶"/"▼" glyph toggles expand/collapse only. Clicking
+		// anywhere else on the row (the label) always shows the row's view,
+		// leaving the expanded/collapsed state untouched.
+		onGlyph := sidebarGlyphHit(item, x)
+
 		if item.isSection {
-			if item.isTemplates {
-				if m.sidebar.templatesExpanded {
-					m.sidebar.templatesExpanded = false
-					newItems := m.sidebar.items()
-					if m.sidebar.cursor >= len(newItems) {
-						m.sidebar.cursor = len(newItems) - 1
+			if onGlyph {
+				if item.isTemplates {
+					if m.sidebar.templatesExpanded {
+						m.sidebar.templatesExpanded = false
+						newItems := m.sidebar.items()
+						if m.sidebar.cursor >= len(newItems) {
+							m.sidebar.cursor = len(newItems) - 1
+						}
+					} else {
+						m.sidebar.templatesExpanded = true
+						notes, _ := m.vault.ListByTag("template")
+						m.sidebar.templateNotes = notes
+						m.sidebar.templateCount = len(notes)
 					}
 				} else {
-					m.sidebar.templatesExpanded = true
-					notes, _ := m.vault.ListByTag("template")
-					m.sidebar.templateNotes = notes
-					m.sidebar.templateCount = len(notes)
+					if m.sidebar.expanded[item.state] {
+						m.sidebar.expanded[item.state] = false
+						newItems := m.sidebar.items()
+						if m.sidebar.cursor >= len(newItems) {
+							m.sidebar.cursor = len(newItems) - 1
+						}
+					} else {
+						m.sidebar.expanded[item.state] = true
+						if item.state != vault.StateProjects {
+							notes, _ := m.vault.ListByState(item.state)
+							m.sidebar.notesByState[item.state] = notes
+						}
+					}
 				}
+				return
+			}
+			if item.isTemplates {
 				m.sidebar.templatesActive = true
 			} else {
-				if m.sidebar.expanded[item.state] {
-					m.sidebar.expanded[item.state] = false
-					newItems := m.sidebar.items()
-					if m.sidebar.cursor >= len(newItems) {
-						m.sidebar.cursor = len(newItems) - 1
-					}
-				} else {
-					m.sidebar.expanded[item.state] = true
-					if item.state != vault.StateProjects {
-						notes, _ := m.vault.ListByState(item.state)
-						m.sidebar.notesByState[item.state] = notes
-					}
-				}
 				m.sidebar.activeState = item.state
 				m.sidebar.templatesActive = false
 				m.sidebar.projectsActive = item.state == vault.StateProjects
 			}
 			m.showSectionLanding(m.sidebar.activeState, m.sidebar.templatesActive)
 		} else if item.isProjectEntry {
-			if m.sidebar.expandedProjects[item.project.Name] {
-				m.sidebar.expandedProjects[item.project.Name] = false
-				newItems := m.sidebar.items()
-				if m.sidebar.cursor >= len(newItems) {
-					m.sidebar.cursor = len(newItems) - 1
-				}
-			} else {
-				m.sidebar.expandedProjects[item.project.Name] = true
-				allNotes, _ := m.vault.ListAll()
-				var pNotes []*vault.Note
-				for _, n := range allNotes {
-					if n.Project == item.project.Name && n.State == vault.StateProjects {
-						pNotes = append(pNotes, n)
+			if onGlyph {
+				if m.sidebar.expandedProjects[item.project.Name] {
+					m.sidebar.expandedProjects[item.project.Name] = false
+					newItems := m.sidebar.items()
+					if m.sidebar.cursor >= len(newItems) {
+						m.sidebar.cursor = len(newItems) - 1
 					}
+				} else {
+					m.sidebar.expandedProjects[item.project.Name] = true
+					allNotes, _ := m.vault.ListAll()
+					var pNotes []*vault.Note
+					for _, n := range allNotes {
+						if n.Project == item.project.Name && n.State == vault.StateProjects {
+							pNotes = append(pNotes, n)
+						}
+					}
+					m.sidebar.projectNotesByName[item.project.Name] = pNotes
 				}
-				m.sidebar.projectNotesByName[item.project.Name] = pNotes
+				m.sidebar.activeProjectName = item.project.Name
+				m.sidebar.projectsActive = true
+				m.sidebar.templatesActive = false
+				return
 			}
 			m.sidebar.activeProjectName = item.project.Name
 			m.sidebar.projectsActive = true
@@ -821,7 +930,12 @@ func (m *Model) handleMouseClick(x, y int) {
 			noteIdx := y - 3
 			if noteIdx >= 0 && noteIdx < len(m.noteList.notes) {
 				m.noteList.cursor = noteIdx
-				sp.openNote(m.noteList.notes[noteIdx])
+				chosen := m.noteList.notes[noteIdx]
+				if m.searchResults != nil {
+					sp.openNoteFromSearch(chosen, m.searchResults)
+				} else {
+					sp.openNote(chosen)
+				}
 				l := m.computeLayout()
 				sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
 			}
@@ -837,7 +951,116 @@ func (m *Model) handleMouseClick(x, y int) {
 			bodyLine := (contentRow - sp.viewer.headerLineCount - 1) + sp.viewer.scrollOff
 			if target := sp.viewer.linkAtLine(bodyLine); target != "" {
 				m.openOrCreateNote(target)
+			} else {
+				m.toggleCheckboxAt(sp, bodyLine)
 			}
+		}
+	}
+}
+
+// toggleCheckboxAt flips the "[ ]"/"[x]" checkbox on a rendered body line, if
+// any, and saves the note. Shared by the view-mode mouse click above and the
+// keyboard block cursor's Enter action.
+// toggleCheckboxAt toggles the checkbox on a rendered body line (mouse click
+// path), if any.
+func (m *Model) toggleCheckboxAt(sp *splitPane, bodyLine int) {
+	rawLine, ok := sp.viewer.checkboxRawLineAt(bodyLine)
+	if !ok {
+		return
+	}
+	m.applyCheckboxToggle(sp, rawLine)
+}
+
+// applyCheckboxToggle flips the checkbox on a raw body line, saves, and
+// re-renders — shared by the mouse click above and the keyboard cursor's
+// Enter action. Preserves cursor/scroll position across the refresh.
+func (m *Model) applyCheckboxToggle(sp *splitPane, rawLine int) {
+	if sp.viewer.note == nil {
+		return
+	}
+	n := sp.viewer.note
+	newBody, ok := toggleCheckboxLine(n.Body, rawLine)
+	if !ok {
+		return
+	}
+	oldNote := *n
+	n.Body = newBody
+	if err := m.vault.Save(n); err != nil {
+		m.statusMsg = "save error: " + err.Error()
+		return
+	}
+	m.undoStack = append(m.undoStack, undoRecord{oldNote: oldNote, newNote: *n})
+	if len(m.undoStack) > 20 {
+		m.undoStack = m.undoStack[1:]
+	}
+	m.redoStack = nil
+	m.index.Upsert(n)
+
+	row, col, scroll := sp.viewer.cursorRow, sp.viewer.cursorCol, sp.viewer.scrollOff
+	sp.viewer = sp.viewer.withNote(n)
+	sp.viewer.cursorRow, sp.viewer.cursorCol, sp.viewer.scrollOff = row, col, scroll
+	l := m.computeLayout()
+	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+}
+
+// handleMouseWheel scrolls whichever pane (sidebar or a main split) is under
+// the cursor, without stealing focus from the currently active pane.
+func (m *Model) handleMouseWheel(x int, button tea.MouseButton) {
+	l := m.computeLayout()
+	up := button == tea.MouseButtonWheelUp
+
+	if x < l.sidebarWidth {
+		items := m.sidebar.items()
+		if up {
+			if m.sidebar.cursor > 0 {
+				m.sidebar.cursor--
+			}
+		} else if m.sidebar.cursor < len(items)-1 {
+			m.sidebar.cursor++
+		}
+		return
+	}
+
+	if x < l.sidebarWidth+1 || l.paneWidth <= 0 {
+		return
+	}
+	mainX := x - l.sidebarWidth - 1
+	paneOuter := l.paneWidth + 2
+	slotWidth := paneOuter + 1
+	idx := mainX / slotWidth
+	if idx >= len(m.splits) {
+		idx = len(m.splits) - 1
+	}
+	sp := &m.splits[idx]
+
+	switch sp.activeView {
+	case viewNote:
+		if up {
+			if sp.viewer.scrollOff > 0 {
+				sp.viewer.scrollOff--
+			}
+		} else {
+			sp.viewer.scrollOff++
+		}
+	case viewList:
+		if up {
+			if m.noteList.cursor > 0 {
+				m.noteList.cursor--
+			}
+		} else if m.noteList.cursor < len(m.noteList.notes)-1 {
+			m.noteList.cursor++
+		}
+	case viewHelp:
+		maxOff := HelpTotalLines() - l.contentHeight
+		if maxOff < 0 {
+			maxOff = 0
+		}
+		if up {
+			if sp.helpScrollOff > 0 {
+				sp.helpScrollOff--
+			}
+		} else if sp.helpScrollOff < maxOff {
+			sp.helpScrollOff++
 		}
 	}
 }
@@ -906,6 +1129,17 @@ func (m Model) View() string {
 			Width(configInner).
 			Height(l.contentHeight).
 			Render(m.configView.render(configInner, l.contentHeight))
+	} else if m.showImport {
+		importInner := l.mainWidth - 2
+		if importInner < 1 {
+			importInner = 1
+		}
+		main = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(activeTheme.BorderFocus).
+			Width(importInner).
+			Height(l.contentHeight).
+			Render(m.importView.render(importInner, l.contentHeight))
 	} else {
 		main = m.renderSplits(l)
 	}
@@ -1105,6 +1339,12 @@ func (m Model) renderTooltipBar() string {
 		return lipgloss.NewStyle().Width(m.width).Background(activeTheme.StatusBg).Render(bar)
 	}
 
+	// Import overlay: show import-specific hints.
+	if m.showImport {
+		bar := strings.Join([]string{chip("Tab", "next field"), chip("Space", "toggle mode"), chip("Enter", "confirm/complete"), chip("Esc", "cancel")}, " ")
+		return lipgloss.NewStyle().Width(m.width).Background(activeTheme.StatusBg).Render(bar)
+	}
+
 	// Pane picker mode.
 	if m.panePicker {
 		total := len(m.splits) + 1
@@ -1136,6 +1376,7 @@ func (m Model) renderTooltipBar() string {
 	shiftChips := strings.Join([]string{
 		chip("N", "new"),
 		chip("A", "archive"),
+		chip("D", "delete"),
 		chip("M", "move"),
 		chip("O", "open"),
 		chip("T", "insert"),
@@ -1217,6 +1458,7 @@ func (m *Model) handleUndo() {
 		return
 	}
 	m.index.Upsert(&old)
+	m.titleSet[strings.ToLower(old.Title)] = true
 	l := m.computeLayout()
 	for i := range m.splits {
 		if m.splits[i].viewer.note != nil && m.splits[i].viewer.note.ID == old.ID {
