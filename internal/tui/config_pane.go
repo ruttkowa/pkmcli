@@ -14,6 +14,8 @@ const (
 	cfgItemSidebarWidth
 	cfgItemRestoreSession
 	cfgItemLineNumbers
+	cfgItemShowTasksNav
+	cfgItemShowTemplatesNav
 )
 
 type configItem struct {
@@ -26,11 +28,13 @@ var configItems = []configItem{
 	{label: "Sidebar width", options: []string{"20%", "25%", "33%"}},
 	{label: "Restore session", options: []string{"on", "off"}},
 	{label: "Line numbers", options: []string{"on", "off"}},
+	{label: "Show Tasks nav", options: []string{"on", "off"}},
+	{label: "Show Templates nav", options: []string{"on", "off"}},
 }
 
-// cfgLabelWidth is wide enough to cover the longest label ("Restore session" = 15) plus
+// cfgLabelWidth is wide enough to cover the longest label ("Show Templates nav" = 19) plus
 // the "▶ " cursor prefix (2) and two spaces of padding.
-const cfgLabelWidth = 20
+const cfgLabelWidth = 23
 
 // configSection is one tab of the config overlay.
 type configSection int
@@ -104,6 +108,14 @@ func newConfigPane(cfg AppConfig) configPane {
 
 	if !cfg.LineNumbers {
 		v[cfgItemLineNumbers] = 1
+	}
+
+	if !cfg.ShowTasksNav {
+		v[cfgItemShowTasksNav] = 1
+	}
+
+	if !cfg.ShowTemplatesNav {
+		v[cfgItemShowTemplatesNav] = 1
 	}
 
 	var vars []variableEntry

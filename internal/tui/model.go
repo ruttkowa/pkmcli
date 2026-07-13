@@ -25,6 +25,7 @@ const (
 	viewProjectDetail
 	viewHelp
 	viewSectionLanding
+	viewTasksOverview
 )
 
 type undoRecord struct {
@@ -199,6 +200,8 @@ func New(v *vault.Vault, idx *index.Index) Model {
 	// Load config first (theme, sidebar width, etc.).
 	cfg := loadConfig(v)
 	m.cfg = cfg
+	m.sidebar.showTasksNav = cfg.ShowTasksNav
+	m.sidebar.showTemplatesNav = cfg.ShowTemplatesNav
 
 	activeTheme = NordTheme // default if theme name not recognized
 	for _, t := range ThemeChoices {
@@ -340,8 +343,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if sp.editor.saved {
 					m.commitEditorDraft(sp)
 				} else if sp.editor.cancelled {
-					sp.editor = editPane{}
-					sp.activeView = viewNote
+					if sp.editor.dirty() {
+						m.commitEditorDraft(sp)
+					} else {
+						sp.editor = editPane{}
+						sp.activeView = viewNote
+					}
 				}
 				return m, tea.Batch(cmds...)
 			}
@@ -590,6 +597,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.splits[m.activeSplit].projectDetail = newProjectDetailPane(p, pNotes)
 					m.splits[m.activeSplit].activeView = viewProjectDetail
 					m.activePane = paneMain
+				} else if m.sidebar.selectedTasks {
+					m.sidebar.selectedTasks = false
+					m.openTasksOverview()
 				} else {
 					// Section header selected: show landing page; keep focus in sidebar
 					// so the user can navigate notes below and open them with Enter.
@@ -668,6 +678,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if msg.String() == "esc" || msg.String() == "backspace" {
 					sp.activeView = viewList
 				}
+			case viewTasksOverview:
+				switch msg.String() {
+				case "esc", "backspace":
+					sp.activeView = viewList
+				case "j", "down":
+					if sp.taskCursorRow < len(sp.taskRows)-1 {
+						sp.taskCursorRow++
+					}
+					m.followTaskCursor(sp)
+				case "k", "up":
+					if sp.taskCursorRow > 0 {
+						sp.taskCursorRow--
+					}
+					m.followTaskCursor(sp)
+				case "g":
+					sp.taskCursorRow = 0
+					sp.taskScrollOff = 0
+				case "G":
+					sp.taskCursorRow = len(sp.taskRows) - 1
+					m.followTaskCursor(sp)
+				case "enter":
+					if sp.taskCursorRow >= 0 && sp.taskCursorRow < len(sp.taskRows) {
+						if row := sp.taskRows[sp.taskCursorRow]; row.task != nil {
+							m.openOrCreateNote(row.task.note.Title)
+						}
+					}
+				}
 			case viewHelp:
 				switch msg.String() {
 				case "esc", "backspace", "?":
@@ -706,7 +743,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			l := m.computeLayout()
 			for i := range m.splits {
 				if m.splits[i].viewer.note != nil && m.splits[i].viewer.note.ID == msg.note.ID {
+					row, col, scroll := m.splits[i].viewer.cursorRow, m.splits[i].viewer.cursorCol, m.splits[i].viewer.scrollOff
 					m.splits[i].viewer = m.splits[i].viewer.withNote(msg.note)
+					m.splits[i].viewer.cursorRow, m.splits[i].viewer.cursorCol, m.splits[i].viewer.scrollOff = row, col, scroll
 					m.splits[i].viewer = m.splits[i].viewer.preRender(l.paneWidth, m.titleSet)
 				}
 			}
@@ -761,6 +800,14 @@ func (m *Model) applyConfigItem(itemIdx, valueIdx int) {
 		m.cfg.RestoreSession = valueIdx == 0
 	case cfgItemLineNumbers:
 		m.cfg.LineNumbers = valueIdx == 0
+	case cfgItemShowTasksNav:
+		m.cfg.ShowTasksNav = valueIdx == 0
+		m.sidebar.showTasksNav = m.cfg.ShowTasksNav
+		m.sidebar.clampCursor()
+	case cfgItemShowTemplatesNav:
+		m.cfg.ShowTemplatesNav = valueIdx == 0
+		m.sidebar.showTemplatesNav = m.cfg.ShowTemplatesNav
+		m.sidebar.clampCursor()
 	}
 }
 
@@ -777,6 +824,9 @@ func (m *Model) applyConfig(cfg AppConfig) {
 		}
 	}
 	m.bustViewerCaches()
+	m.sidebar.showTasksNav = cfg.ShowTasksNav
+	m.sidebar.showTemplatesNav = cfg.ShowTemplatesNav
+	m.sidebar.clampCursor()
 	if m.showConfig {
 		m.configView = newConfigPane(m.cfg)
 	}
@@ -857,12 +907,17 @@ func (m *Model) handleMouseClick(x, y int) {
 			}
 			if item.isTemplates {
 				m.sidebar.templatesActive = true
+				m.showSectionLanding(m.sidebar.activeState, m.sidebar.templatesActive)
+			} else if item.isTasks {
+				m.sidebar.tasksActive = true
+				m.sidebar.templatesActive = false
+				m.openTasksOverview()
 			} else {
 				m.sidebar.activeState = item.state
 				m.sidebar.templatesActive = false
 				m.sidebar.projectsActive = item.state == vault.StateProjects
+				m.showSectionLanding(m.sidebar.activeState, m.sidebar.templatesActive)
 			}
-			m.showSectionLanding(m.sidebar.activeState, m.sidebar.templatesActive)
 		} else if item.isProjectEntry {
 			if onGlyph {
 				if m.sidebar.expandedProjects[item.project.Name] {
@@ -1211,6 +1266,8 @@ func (m Model) renderSplits(l layout) string {
 			content = renderHelpView(pi, l.contentHeight, sp.helpScrollOff)
 		case viewSectionLanding:
 			content = sp.sectionLanding.render(pi, l.contentHeight)
+		case viewTasksOverview:
+			content = renderTaskOverview(sp.taskRows, pi, l.contentHeight, sp.taskScrollOff, sp.taskCursorRow, focused)
 		}
 
 		borderColor := activeTheme.BorderNormal
@@ -1252,6 +1309,8 @@ func (m Model) renderBreadcrumb() string {
 		}
 	case viewProjectsOverview:
 		title += "  ›  Projects"
+	case viewTasksOverview:
+		title += "  ›  Tasks"
 	case viewHelp:
 		title += "  ›  Help"
 	case viewSectionLanding:
@@ -1360,9 +1419,15 @@ func (m Model) renderTooltipBar() string {
 		return lipgloss.NewStyle().Width(m.width).Background(activeTheme.StatusBg).Render(bar)
 	}
 
+	// Task Overview: show cursor movement, open, and close hints.
+	if m.activePane == paneMain && len(m.splits) > 0 && m.splits[m.activeSplit].activeView == viewTasksOverview {
+		bar := strings.Join([]string{chip("j/k", "select"), chip("g/G", "top/bottom"), chip("Enter", "open note"), chip("Esc", "close")}, " ")
+		return lipgloss.NewStyle().Width(m.width).Background(activeTheme.StatusBg).Render(bar)
+	}
+
 	// Edit mode: show edit-specific hints.
 	if m.activePane == paneMain && len(m.splits) > 0 && m.splits[m.activeSplit].activeView == viewEdit {
-		bar := strings.Join([]string{chip(keyChipLabel(m.cfg.Keymap.Save), "save"), chip(keyChipLabel(m.cfg.Keymap.Palette), "command"), chip("Tab", "cycle fields"), chip("Esc", "cancel"), chip("^C", "quit")}, " ")
+		bar := strings.Join([]string{chip(keyChipLabel(m.cfg.Keymap.Save), "save"), chip(keyChipLabel(m.cfg.Keymap.Palette), "command"), chip("Tab", "cycle fields"), chip("Esc", "save & close"), chip("^C", "quit")}, " ")
 		return lipgloss.NewStyle().Width(m.width).Background(activeTheme.StatusBg).Render(bar)
 	}
 
@@ -1442,6 +1507,33 @@ func (m *Model) showSectionLanding(state vault.NoteState, isTemplates bool) {
 			count:       len(notes),
 		}
 		m.splits[m.activeSplit].activeView = viewSectionLanding
+	}
+}
+
+// openTasksOverview assembles issue #13's Task Overview (a fresh vault scan,
+// per-view-open — there is no task index yet) and switches the active split
+// to it. Shared by the :tasks command, the sidebar's Tasks row, and its
+// mouse-click equivalent.
+func (m *Model) openTasksOverview() {
+	sp := &m.splits[m.activeSplit]
+	sp.taskRows = buildTaskOverviewRows(m.vault)
+	sp.taskScrollOff = 0
+	sp.taskCursorRow = 0
+	sp.activeView = viewTasksOverview
+	m.activePane = paneMain
+}
+
+// followTaskCursor adjusts sp.taskScrollOff so taskCursorRow stays within
+// the visible window, mirroring viewerModel.followCursor.
+func (m *Model) followTaskCursor(sp *splitPane) {
+	rows := m.computeLayout().contentHeight
+	if sp.taskCursorRow < sp.taskScrollOff {
+		sp.taskScrollOff = sp.taskCursorRow
+	} else if sp.taskCursorRow >= sp.taskScrollOff+rows {
+		sp.taskScrollOff = sp.taskCursorRow - rows + 1
+	}
+	if sp.taskScrollOff < 0 {
+		sp.taskScrollOff = 0
 	}
 }
 

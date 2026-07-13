@@ -24,10 +24,46 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   (next to word/line counts). The editor footer also shows an
   "● Unsaved changes" marker whenever the draft's body, tags, project, or
   state differs from the last-saved note.
+- `:tasks` command + sidebar "Tasks" row (below `#templates`, shown by
+  default) — a read-only Task Overview collecting every checkbox line in
+  the vault, grouped by active project (sidebar order) then by file
+  (title order), with a trailing "Unassigned" group for everything else.
+  `j`/`k`/`g`/`G` move the row cursor, `Enter` opens the task's source
+  note, `Esc` closes. Assembled fresh from a vault scan each time it's
+  opened — no persistent task index yet. Issue #13; foundation for the
+  rest of the task epic. `internal/tui/task_overview.go`.
+- `:config` → General gets two new toggles: "Show Tasks nav" and "Show
+  Templates nav" (both default on), independently controlling whether
+  the sidebar's Tasks row and `#templates` section appear at all.
+  Applied live on toggle, persisted to `config.yaml`
+  (`show_tasks_nav`/`show_templates_nav`), and safe for configs written
+  before these fields existed — a config seeds `defaultConfig()` (both
+  true) before unmarshalling, so an absent key leaves the seeded true in
+  place while an explicit `false` is still honored. Issue #14.
+  `internal/tui/appconfig.go`, `config_pane.go`, `sidebar.go`.
+- Finished tasks now sink to the bottom of their block in the viewer
+  (unfinished first, both groups keeping original relative order) and
+  render in a muted, secondary style — display-only, per user decision:
+  the `.md` file's line order is never rewritten, only the rendered
+  position. The checkbox stays toggleable in its new slot either way.
+  User-approved decision (render-only, not a physical file rewrite).
+  Raw-line integrity across the reorder verified by a discriminating
+  test with duplicate task text. Issue #12. `internal/tui/viewer.go`
+  (`annotateInteractive`'s per-block stable partition,
+  `processCheckboxesAndCode`'s muted re-tint).
 
 ### Changed
 - Removed the transient "saved: `<title>`" message from the global hotkey
   toolbar — save status now lives only in the document-pane footer above.
+- Task checkbox lines may now optionally carry a completion date and a
+  result: `- [x] Task ✅ 2026-07-10 --> result`, where a result that parses
+  as `[[wikilink]]` renders/opens as a link. Stamped/stripped automatically
+  by `toggleCheckboxLine` on toggle; plain `- [x] text` with neither stays
+  fully valid and untouched until actually toggled. Explicitly approved
+  departure from CLAUDE.md's prior "no custom task syntax" — documented in
+  both `CLAUDE.md` and `spec.html`. Foundation for the task-overview epic
+  (see `todo.md`/GitHub issues #11-#14). `internal/tui/viewer.go`
+  (`parseTaskLine`, `formatTaskLine`, `toggleCheckboxLine`).
 
 ### Fixed (this batch)
 - The editor's and viewer's new footer rows now degrade gracefully
@@ -37,6 +73,50 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   pane's rendered content one line past its bordered box's allotted
   height, desyncing the border. Caught via a second tmux pass in a
   narrow split (the first pass only exercised a single wide pane).
+
+### Fixed (bug-fix pass)
+- Vault: fixed a leading-blank-line accretion bug where every save→reload
+  round trip (which every checkbox toggle triggers, via the fsnotify
+  watcher) permanently added one more blank line to the top of a note's
+  body — unbounded growth on repeated use of the task feature. Root cause:
+  `parseNote` only stripped one leading `\n` after the frontmatter
+  delimiter, while `marshalNote` always re-added one, so any blank line
+  already baked into `Body` survived and compounded. Fixed by stripping
+  all leading newlines on parse (`strings.TrimLeft` instead of
+  `TrimPrefix`) so the round trip is idempotent; this also self-heals
+  notes already corrupted by the bug the next time they're loaded, no
+  migration needed. Found while manually verifying #12; confirmed via a
+  discriminating test (temporarily reverted the fix to prove it fails)
+  plus a live tmux run toggling a real checkbox four times. Discovered,
+  diagnosed, and fixed within this session — never released.
+  `internal/vault/frontmatter.go` (`parseNote`).
+- Editor: `Esc` now saves the draft (if changed) and pushes an undo
+  record, instead of silently discarding every typed change. Routes
+  through the same `commitEditorDraft` path as `Ctrl+S`; a clean
+  (unmodified) `Esc` is still a no-op save/undo push.
+  `internal/tui/model.go`.
+- Viewer: toggling a checkbox no longer snaps the cursor and scroll
+  position back to the top. The fsnotify-triggered reload
+  (`vaultChangedMsg` → `withNote`) was resetting them; now saved and
+  restored around the reload, same pattern `applyCheckboxToggle` already
+  used. `internal/tui/model.go`.
+- Viewer: `Space` toggles the checkbox on the current line from anywhere
+  in that line, not just when the cursor sits on the `[ ]` itself — a
+  no-op on non-task lines. `internal/tui/viewer.go`.
+- Editor: pressing `Enter` again on a list/task marker with no text
+  after it (i.e. right after Enter auto-continued the list) now clears
+  that marker instead of adding yet another one, letting you break out
+  of a list. Terminal-safe stand-in for the originally requested
+  `Shift+Enter`: this Bubble Tea/terminal stack delivers Shift+Enter as
+  an identical `KeyMsg` to plain Enter (verified empirically), so there
+  is no separate key event to bind. `internal/tui/editor.go`
+  (`handleEnter`).
+- Viewer: fenced ` ``` ` code blocks now render with the same flat
+  color/background swatch as inline `` `code` `` spans, instead of
+  glamour's default per-token chroma syntax highlighting (visibly
+  different from inline code). `internal/tui/viewer.go`
+  (`headingStyleConfig`, which disables `CodeBlock.Chroma` and copies
+  the `Code` swatch onto `CodeBlock`).
 
 ### Fixed
 - `Ctrl+Z` undo after `:delete` now re-registers the note's title in the

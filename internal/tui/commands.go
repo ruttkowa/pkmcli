@@ -67,6 +67,8 @@ func (m *Model) handleCommand(raw string) (string, tea.Cmd) {
 		return m.cmdConfig(args)
 	case "import":
 		return m.cmdImport(args)
+	case "tasks":
+		return m.cmdTasks()
 	case "help":
 		return m.cmdHelp()
 	case "quit", "exit", "q":
@@ -557,6 +559,11 @@ func (m *Model) cmdNewTemplate(args []string) (string, tea.Cmd) {
 	l := m.computeLayout()
 	m.splits[m.activeSplit].viewer = m.splits[m.activeSplit].viewer.preRender(l.paneWidth, m.titleSet)
 	return "created template: " + n.Title, nil
+}
+
+func (m *Model) cmdTasks() (string, tea.Cmd) {
+	m.openTasksOverview()
+	return "", nil
 }
 
 func (m *Model) cmdHelp() (string, tea.Cmd) {

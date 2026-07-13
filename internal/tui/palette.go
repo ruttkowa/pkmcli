@@ -119,6 +119,13 @@ var allCommands = []cmdDef{
 		slots:   []slotKind{slotNone},
 	},
 	{
+		name:    "tasks",
+		sig:     "",
+		desc:    "Show every task in the vault, grouped by project then file",
+		example: `:tasks`,
+		slots:   []slotKind{},
+	},
+	{
 		name:    "help",
 		sig:     "",
 		desc:    "Show help (keybindings, commands, workflows)",

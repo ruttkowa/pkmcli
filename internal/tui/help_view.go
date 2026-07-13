@@ -31,7 +31,13 @@ VIEW MODE CURSOR
     - checkbox  → toggle "- [ ]" / "- [x]" and save
     - code block → copy its contents to the clipboard (OSC 52; works over
                     SSH and inside tmux/zellij)
+  Space also toggles a checkbox from anywhere on that task's line, not just
+  when the cursor sits on the "[ ]" itself; it's a no-op on non-task lines.
   Clicking a link or checkbox with the mouse does the same thing directly.
+  Finished tasks sink to the bottom of their block on screen (unfinished
+  first, both groups keeping their relative order) and render muted; this
+  is display-only, the file's line order never changes. Un-toggling moves
+  a task back out of the finished group.
   The viewer's bottom row is a fixed footer: "Last saved: HH:MM:SS" plus
   scroll %. This is separate from the hotkey bar below the pane.
 
@@ -39,11 +45,16 @@ READING & EDITING
   e           open current note in the editor
   Ctrl+S      save (in editor)
   Ctrl+Space  open the command palette without leaving the editor
-  Esc         cancel edit without saving
+  Esc         save (if changed) and close — same as Ctrl+S, just a
+              different key; Ctrl+Z undoes it afterward like any save
 
   While editing, :insert writes straight into the open note — you stay
   in the editor. Any other command (e.g. :archive, :move) saves the
   draft first, then runs normally and exits to the viewer.
+
+  Enter continues "- ", "- [ ] "/"- [x] ", "* ", and numbered lists.
+  Pressing Enter again on a marker with no text after it clears that
+  marker instead of adding another — the way to break out of a list.
 
   The editor's footer row shows word/line counts and "Last saved:
   HH:MM:SS"; an "● Unsaved changes" marker appears next to it whenever
@@ -60,6 +71,17 @@ IMPORT POPOVER  —  I or :import [path]
                 on Destination: cycle forward
                 on Import: run the import
   Esc           cancel, no changes made
+
+TASK OVERVIEW  —  :tasks or the sidebar's Tasks row
+  Scans the whole vault for checkbox lines, grouped: each active project
+  with task-bearing notes (heading), its notes (sub-heading, sorted by
+  title) then their tasks; a trailing "Unassigned" group covers every
+  other task-bearing note the same way. Read-only in v1 — Enter opens
+  the source note, toggling from here isn't supported yet.
+  j/k or ↓/↑    move the row cursor
+  g / G         jump to first / last row
+  Enter         open the source note of the task under the cursor
+  Esc           close, back to the note list
 
 COMMAND PALETTE  —  press : or Ctrl+Space to open
   :new "Title"              create note in Inbox
@@ -79,6 +101,8 @@ COMMAND PALETTE  —  press : or Ctrl+Space to open
   :delete <note>            permanently delete a note (Ctrl+Z to undo)
   :import [path]            open the import popover (path autocomplete,
                             move/copy toggle, destination state)
+  :tasks                    show every task in the vault, grouped by
+                            project then file (also in the sidebar)
   :split [note]             open a new side-by-side pane
   :close                    close the focused pane
   :config                   open settings (General / Keybindings / Variables)

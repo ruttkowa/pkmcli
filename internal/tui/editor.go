@@ -542,7 +542,23 @@ func (e editPane) handleEnter() editPane {
 		currentLine = lines[lineIdx]
 	}
 
+	// Enter on a list/task marker with no text typed after it breaks out of
+	// the list instead of continuing it: clear the empty marker and drop to
+	// a plain blank line. This is the terminal-safe stand-in for the
+	// originally requested Shift+Enter break-out — this Bubble Tea setup
+	// cannot distinguish Shift+Enter from plain Enter (both arrive as the
+	// same KeyMsg), so there is no separate binding to hang that behavior
+	// off of.
+	breakOutOfEmptyMarker := func() editPane {
+		for range []rune(currentLine) {
+			e.ta, _ = e.ta.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		}
+		return e
+	}
+
 	switch {
+	case currentLine == "- [ ] ", currentLine == "- [x] ", currentLine == "- ", currentLine == "* ":
+		return breakOutOfEmptyMarker()
 	case strings.HasPrefix(currentLine, "- [x] "), strings.HasPrefix(currentLine, "- [ ] "):
 		e.ta.InsertString("\n- [ ] ")
 	case strings.HasPrefix(currentLine, "- "):
@@ -551,6 +567,9 @@ func (e editPane) handleEnter() editPane {
 		e.ta.InsertString("\n* ")
 	default:
 		if m := numberedListRe.FindStringSubmatch(currentLine); m != nil {
+			if currentLine == m[0] {
+				return breakOutOfEmptyMarker()
+			}
 			n, _ := strconv.Atoi(m[1])
 			e.ta.InsertString(fmt.Sprintf("\n%d. ", n+1))
 		} else {

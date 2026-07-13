@@ -16,6 +16,7 @@ import (
 type sidebarItem struct {
 	isSection      bool
 	isTemplates    bool // true for the virtual #templates section
+	isTasks        bool // true for the virtual Tasks nav row
 	isProjectEntry bool // project folder row (collapsible)
 	isProjectNote  bool // note row under a project folder
 	state          vault.NoteState
@@ -24,27 +25,36 @@ type sidebarItem struct {
 }
 
 type sidebarModel struct {
-	index        *index.Index
-	vault        *vault.Vault
-	activeState  vault.NoteState
-	cursor       int
-	counts       map[vault.NoteState]int
-	expanded     map[vault.NoteState]bool
-	notesByState map[vault.NoteState][]*vault.Note
-	selected     bool
+	index           *index.Index
+	vault           *vault.Vault
+	activeState     vault.NoteState
+	cursor          int
+	counts          map[vault.NoteState]int
+	expanded        map[vault.NoteState]bool
+	notesByState    map[vault.NoteState][]*vault.Note
+	selected        bool
 	selectedNote    *vault.Note    // non-nil when a note title was chosen
 	selectedProject *vault.Project // non-nil when a project entry was chosen
+	selectedTasks   bool           // true when the Tasks row was chosen
 
 	templatesExpanded bool
 	templatesActive   bool
 	templateNotes     []*vault.Note
 	templateCount     int
 
+	tasksActive bool // true when the Task Overview is the active main-pane view
+
+	// visibility, driven by AppConfig (#14) — synced in New(), applyConfigItem,
+	// and applyConfig, never read directly from cfg so items()'s three call
+	// sites (render, keyboard update, mouse click) don't need cfg threaded in.
+	showTasksNav     bool
+	showTemplatesNav bool
+
 	// project folder state (within the expanded Projects section)
-	activeProjectName   string              // name of the focused project folder/note
-	projectsActive      bool                // true when a project folder/note is the active view
-	expandedProjects    map[string]bool     // which project folders are open
-	projectNotesByName  map[string][]*vault.Note // cached notes per project
+	activeProjectName  string                   // name of the focused project folder/note
+	projectsActive     bool                     // true when a project folder/note is the active view
+	expandedProjects   map[string]bool          // which project folders are open
+	projectNotesByName map[string][]*vault.Note // cached notes per project
 }
 
 func newSidebar(idx *index.Index, v *vault.Vault) sidebarModel {
@@ -128,13 +138,31 @@ func (s sidebarModel) items() []sidebarItem {
 		}
 	}
 	// Virtual templates section
-	out = append(out, sidebarItem{isSection: true, isTemplates: true})
-	if s.templatesExpanded {
-		for _, n := range s.templateNotes {
-			out = append(out, sidebarItem{isTemplates: true, note: n})
+	if s.showTemplatesNav {
+		out = append(out, sidebarItem{isSection: true, isTemplates: true})
+		if s.templatesExpanded {
+			for _, n := range s.templateNotes {
+				out = append(out, sidebarItem{isTemplates: true, note: n})
+			}
 		}
 	}
+	// Virtual Tasks nav row — no children, no expand/collapse.
+	if s.showTasksNav {
+		out = append(out, sidebarItem{isSection: true, isTasks: true})
+	}
 	return out
+}
+
+// clampCursor keeps the cursor within bounds after items() shrinks — e.g.
+// when a config toggle hides the Tasks or Templates row.
+func (s *sidebarModel) clampCursor() {
+	n := len(s.items())
+	if s.cursor >= n {
+		s.cursor = n - 1
+	}
+	if s.cursor < 0 {
+		s.cursor = 0
+	}
 }
 
 func (s sidebarModel) update(msg tea.KeyMsg) (sidebarModel, tea.Cmd) {
@@ -226,7 +254,14 @@ func (s sidebarModel) update(msg tea.KeyMsg) (sidebarModel, tea.Cmd) {
 			s.templatesActive = true
 			s.selected = true
 			s.selectedNote = nil
-		} else if item.isSection && !item.isTemplates && !s.expanded[item.state] {
+		} else if item.isSection && item.isTasks {
+			// No expand/collapse state — every activation just selects it.
+			s.tasksActive = true
+			s.templatesActive = false
+			s.selected = true
+			s.selectedNote = nil
+			s.selectedTasks = true
+		} else if item.isSection && !item.isTemplates && !item.isTasks && !s.expanded[item.state] {
 			s.expanded[item.state] = true
 			if item.state != vault.StateProjects {
 				notes, _ := s.vault.ListByState(item.state)
@@ -288,7 +323,13 @@ func (s sidebarModel) update(msg tea.KeyMsg) (sidebarModel, tea.Cmd) {
 			s.templatesActive = true
 			s.selected = true
 			s.selectedNote = nil
-		} else if item.isSection && !item.isTemplates {
+		} else if item.isSection && item.isTasks {
+			s.tasksActive = true
+			s.templatesActive = false
+			s.selected = true
+			s.selectedNote = nil
+			s.selectedTasks = true
+		} else if item.isSection && !item.isTemplates && !item.isTasks {
 			if s.expanded[item.state] {
 				s.expanded[item.state] = false
 				newItems := s.items()
@@ -332,6 +373,8 @@ const sidebarContentX = 2
 func sidebarGlyphHit(item sidebarItem, x int) bool {
 	rel := x - sidebarContentX
 	switch {
+	case item.isTasks:
+		return false // no expand/collapse glyph — the whole row just activates
 	case item.isSection:
 		return rel >= 0 && rel < 2
 	case item.isProjectEntry:
@@ -395,6 +438,9 @@ func (s sidebarModel) render(width, height int, focused bool, openNoteID string)
 				}
 				name = "#templates"
 				countStr = strconv.Itoa(s.templateCount)
+			} else if item.isTasks {
+				exp = "  " // no expand/collapse glyph — this row has no children
+				name = "Tasks"
 			} else {
 				exp = "▶ "
 				if s.expanded[item.state] {
@@ -411,7 +457,7 @@ func (s sidebarModel) render(width, height int, focused bool, openNoteID string)
 			}
 			content := fmt.Sprintf("%s%-*s %s", exp, nameW, name, countStr)
 
-			isActive := (item.isTemplates && s.templatesActive) || (!item.isTemplates && item.state == s.activeState)
+			isActive := (item.isTemplates && s.templatesActive) || (item.isTasks && s.tasksActive) || (!item.isTemplates && !item.isTasks && item.state == s.activeState)
 			switch {
 			case isCursor && focused:
 				line = cursorFocusStyle.Render(content)

@@ -27,7 +27,7 @@ func parseNote(raw []byte, n *Note) error {
 	}
 
 	fmRaw := rest[:end]
-	n.Body = strings.TrimPrefix(rest[end+len("\n"+fmDelimiter):], "\n")
+	n.Body = strings.TrimLeft(rest[end+len("\n"+fmDelimiter):], "\n")
 
 	return yaml.Unmarshal([]byte(fmRaw), n)
 }

@@ -23,6 +23,11 @@ type splitPane struct {
 
 	helpScrollOff int // scroll position within the help view
 
+	// task overview (assembled once on entry, not re-scanned on scroll/cursor move)
+	taskRows      []taskOverviewRow
+	taskScrollOff int
+	taskCursorRow int
+
 	// searchReturn is non-nil when the note currently open (or the one at
 	// the root of this split's history) was opened from a search results
 	// list — once real history is exhausted, "back" restores this list

@@ -3,11 +3,24 @@
 <h1>PKM TUI System Specification</h1>
 <h2>Project Goal</h2>
 <p> Build a local-first Personal Knowledge Management (PKM) application inspired by Neovim, Zellij, LazyGit and Obsidian. </p>
-<p> The application is not an editor. It is a navigation, organization and knowledge management layer built around Markdown files. </p>
-<p> Editing is delegated to an external editor. </p>
+<p> The application is not a full editor. It is a navigation, organization and knowledge management layer built around Markdown files. </p>
+<p> For quick changes it ships a deliberately minimal built-in inline editor (open a note and press <code>e</code>, save with <code>Ctrl+S</code>). For heavier editing you use your own external editor directly on the Markdown files under <code>vault/notes/</code> — the file watcher syncs changes back into the viewer live. The app never launches or embeds a full text editor. </p>
 <hr>
 <h2>Core Principles</h2>
 <ul> <li>Local-first</li> <li>Markdown-only</li> <li>Git-first</li> <li>No AI integration</li> <li>No attachments</li> <li>No plugin system in v1</li> <li>No graph view in v1</li> <li>No query language in v1</li> <li>Keyboard-first</li> <li>Mouse-capable</li> <li>Opinionated workflow</li> </ul>
+<hr>
+<h2>Implementation Status (as of 2026-07-09)</h2>
+<p> This document is the original design specification. The sections below describe the intended system; not everything is built yet. Shipping today: </p>
+<ul>
+  <li>Vault with Inbox / Projects / Areas / Research / Archive states; PARA-style promotion; max 4 active projects; project detail pages with history; assign-to-project (<code>Shift+P</code>).</li>
+  <li>SQLite index (<code>.pkm/index.db</code>) with FTS5 full-text search; live file watcher with incremental updates.</li>
+  <li>Command palette (<code>:</code>) with fuzzy autocomplete: <code>:new</code>, <code>:open</code>, <code>:search</code>, <code>:move</code>, <code>:archive</code>, <code>:delete</code>, <code>:split</code>, <code>:close</code>, <code>:import</code>, <code>:config</code>, <code>:theme</code>, <code>:insert</code>, <code>:new project</code>, <code>:new template</code>, <code>:help</code>, <code>:quit</code>.</li>
+  <li>View mode: block-cursor navigation, wiki-link following, checkbox toggle (cursor + Enter, or mouse click), code-block copy via OSC 52, H1–H6 heading styles, mouse-wheel scrolling, and a live save-status footer.</li>
+  <li>Built-in inline editor (<code>e</code>): Markdown list/checkbox continuation, wiki-link autocomplete, tag / state / project fields, undo &amp; redo, save-status footer.</li>
+  <li>Configurable keybindings; config export / import; user-defined insert variables; session &amp; pane-layout restore; horizontal splits with per-pane history.</li>
+  <li>Soft-delete with <code>Ctrl+Z</code> undo (a durable disk-based trash is still planned).</li>
+</ul>
+<p> Active and planned work is tracked in <strong>GitHub Issues on the <code>ruttkowa/pkmcli</code> repository</strong>, not in this spec. Notable not-yet-built items include a durable soft-delete/trash, text selection &amp; clipboard copy/paste, a task-overview view, and a backlinks pane. Inline task metadata (results, completion dates) is now built — see Tasks below. </p>
 <hr>
 <h2>Knowledge Management Model</h2>
 <p> The system follows a PARA-inspired workflow. </p>
@@ -29,7 +42,7 @@
 <pre> --- id: 202606241530 title: Docker created: 2026-06-24T15:30:00 updated: 2026-06-24T15:45:00 state: research project: tags: - linux - containers --- </pre>
 <hr>
 <h2>Vault Structure</h2>
-<pre> vault/ ├── notes/ ├── templates/ ├── .pkm/ │ ├── config.toml │ ├── projects.toml │ └── index.db └── .git/ </pre>
+<pre> vault/ ├── notes/ ├── templates/ ├── .pkm/ │ ├── config.yaml │ ├── projects.yaml │ └── index.db └── .git/ </pre>
 <p> No content-based folder hierarchy. Organization happens through metadata, tags and states. </p>
 <hr>
 <h2>Tags</h2>
@@ -61,20 +74,23 @@
 <p> Templates are stored as Markdown files. </p>
 <h3>Supported Variables</h3>
 <pre> {{id}} {{title}} {{created}} {{updated}} </pre>
-<h3>Future Variables</h3>
-<pre> {{input:name}} {{input:project}} </pre>
+<h3>User-Defined Variables</h3>
+<p> Beyond the built-ins above, custom <code>{{name}}</code> variables can be defined in <code>:config</code> (Variables section) and inserted on demand via <code>:insert var</code>. </p>
 <hr>
 <h2>Tasks</h2>
-<p> Tasks are Markdown checkboxes. </p>
+<p> Tasks are Markdown checkboxes: <code>- [ ]</code> / <code>- [x]</code>. Plain checkboxes with no metadata remain fully valid — nothing is rewritten on load, only on an actual toggle. </p>
 <pre> - [ ] Install Docker - [x] Configure SSH </pre>
-<p> No custom task syntax. </p>
+<p> A checkbox line may optionally carry a completion date and a result, in this canonical order: <code>text</code>, then <code>&#x2705; YYYY-MM-DD</code> if done, then <code>--&gt; result</code> if set. </p>
+<pre> - [x] Ship the thing &#x2705; 2026-07-10 --&gt; shipped in v2 - [x] Read paper &#x2705; 2026-07-10 --&gt; [[202606241530 Notes]] </pre>
+<p> The completion date is stamped automatically when a task is toggled done, and stripped when toggled back to undone (overwritten by repeated toggles, not accumulated). A result is free text following <code>--&gt;</code>; if it parses as a <code>[[wikilink]]</code> it renders and opens as a link like any other wikilink. This is a deliberate, minimal departure from "no custom task syntax" below — everything else about the task model (indexing, no query language) is unchanged. </p>
 <p> Tasks may be indexed by the system. </p>
 <hr>
 <h2>Editor Model</h2>
-<p> The application is not a text editor. </p>
-<p> Editing is delegated to a configurable external editor. </p>
-<p> Examples: </p>
-<ul> <li>nvim</li> <li>vim</li> <li>helix</li> <li>emacs</li> </ul>
+<p> The application is not a full text editor. Two editing paths exist: </p>
+<ul>
+  <li><strong>Built-in inline editor</strong> — a lightweight editor for quick edits (open a note, press <code>e</code>; save with <code>Ctrl+S</code>). It handles Markdown list/checkbox continuation, wiki-link autocomplete, tag/state/project fields, undo/redo and a save-status footer. Intentionally minimal — not a replacement for a real editor.</li>
+  <li><strong>Your external editor</strong> — edit the Markdown files under <code>vault/notes/</code> directly in nvim, vim, helix, emacs or anything else. The file watcher picks up the changes and refreshes the viewer without a restart. The app does not launch the external editor and has no configurable "editor" setting.</li>
+</ul>
 <hr>
 <h2>User Interface</h2>
 <h3>Main Layout</h3>
@@ -130,7 +146,7 @@
 <p> Activation: </p>
 <pre> : </pre>
 <h3>Examples</h3>
-<pre> :new "Docker" :open docker :search docker :move docker → project/homelab :archive docker :split docker </pre>
+<pre> :new "Docker" :open docker :search docker :move docker → project/homelab :archive docker :delete docker :split docker :import ~/notes/foo.md :config :theme :new project "Homelab" :new template :insert :help :quit </pre>
 <h3>Features</h3>
 <ul> <li>Autocomplete</li> <li>Fuzzy matching</li> <li>Command suggestions</li> <li>Note suggestions</li> <li>Tag suggestions</li> <li>Project suggestions</li> </ul>
 <hr>
@@ -147,5 +163,5 @@
 <pre> Input ↓ Parser ↓ Resolver ↓ Command ↓ State Update ↓ Event ↓ UI Refresh </pre>
 <hr>
 <h2>Explicit Non-Goals</h2>
-<ul> <li>No AI integration</li> <li>No attachment management</li> <li>No graph visualization</li> <li>No plugin system</li> <li>No embedded editor</li> <li>No canvas system</li> <li>No PDF management</li> <li>No image management</li> <li>No custom task language</li> <li>No query language in v1</li> </ul>
+<ul> <li>No AI integration</li> <li>No attachment management</li> <li>No graph visualization</li> <li>No plugin system</li> <li>No canvas system</li> <li>No PDF management</li> <li>No image management</li> <li>No custom task language</li> <li>No query language in v1</li> <li>No full embedded editor — a deliberately minimal inline editor exists for quick edits; heavier editing stays in your own external editor</li> </ul>
 </body> </html>

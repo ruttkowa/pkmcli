@@ -111,7 +111,9 @@ Fuzzy search, title search, content search, tag search. No query language in v1.
 
 ## Tasks
 
-Standard Markdown checkboxes only (`- [ ]` / `- [x]`). No custom task syntax. Tasks may be indexed by the system.
+Markdown checkboxes (`- [ ]` / `- [x]`). Plain checkboxes with no metadata are always valid — nothing is rewritten on load, only on an actual toggle. Tasks may be indexed by the system.
+
+**Approved departure (2026-07-10):** a checkbox line may optionally carry a completion date and a result, canonical order `text ✅ YYYY-MM-DD --> result`. The date is stamped on toggle-to-done and stripped on toggle-to-undone (not accumulated); a result is free text after `-->`, rendered/opened as a link if it's a `[[wikilink]]`. This is a narrow, explicitly user-approved extension — it is not a general "custom task language" or query language (still a non-goal below). See `spec.html` Tasks section and `internal/tui/viewer.go` (`parseTaskLine`/`formatTaskLine`/`toggleCheckboxLine`).
 
 ## Templates
 

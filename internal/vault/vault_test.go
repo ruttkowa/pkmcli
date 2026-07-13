@@ -197,6 +197,32 @@ func TestSaveNote(t *testing.T) {
 	}
 }
 
+func TestSaveLoadCycleDoesNotAccumulateLeadingBlankLines(t *testing.T) {
+	v := setupVault(t)
+	n, _ := v.Create("Repeated Toggle")
+	n.Body = "- [ ] Task A"
+	if err := v.Save(n); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Simulate repeated checkbox-toggle round trips: load, re-save unchanged, reload.
+	for i := 0; i < 5; i++ {
+		reloaded, err := v.Load(n.Path)
+		if err != nil {
+			t.Fatalf("Load (cycle %d): %v", i, err)
+		}
+		if strings.HasPrefix(reloaded.Body, "\n") {
+			t.Fatalf("cycle %d: Body gained a leading blank line: %q", i, reloaded.Body)
+		}
+		if reloaded.Body != "- [ ] Task A" {
+			t.Fatalf("cycle %d: Body corrupted: %q", i, reloaded.Body)
+		}
+		if err := v.Save(reloaded); err != nil {
+			t.Fatalf("Save (cycle %d): %v", i, err)
+		}
+	}
+}
+
 func TestListAll(t *testing.T) {
 	v := setupVault(t)
 	v.Create("A")

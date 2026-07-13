@@ -86,6 +86,50 @@ func TestImportToleratesVersionMismatchAndUnknownFields(t *testing.T) {
 	}
 }
 
+// TestLoadConfigDefaultsShowNavFlagsForLegacyFile guards against issue #14's
+// backward-compat trap: ShowTasksNav/ShowTemplatesNav are bools, so their Go
+// zero value is false. A config.yaml written before these fields existed
+// must NOT hide both nav rows on upgrade — loadConfig seeds defaultConfig()
+// (both true) before unmarshalling, and yaml.Unmarshal only overwrites keys
+// actually present in the file, so an absent key must leave the seeded true
+// in place. This exercises the real loadConfig path end-to-end, not just
+// fillConfigDefaults, since that's what production actually calls.
+func TestLoadConfigDefaultsShowNavFlagsForLegacyFile(t *testing.T) {
+	dir := t.TempDir()
+	v, err := vault.Open(dir)
+	if err != nil {
+		t.Fatalf("vault.Open: %v", err)
+	}
+
+	// A pre-#14 config file: no show_tasks_nav / show_templates_nav keys.
+	legacy := "version: 1\ntheme: dracula\nsidebar_width: 20\nrestore_session: true\nline_numbers: true\n"
+	if err := os.WriteFile(configFilePath(v), []byte(legacy), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	cfg := loadConfig(v)
+	if !cfg.ShowTasksNav {
+		t.Error("ShowTasksNav should default true for a config file predating the field")
+	}
+	if !cfg.ShowTemplatesNav {
+		t.Error("ShowTemplatesNav should default true for a config file predating the field")
+	}
+
+	// An explicit false in the file must still be honored (bool false is a
+	// legitimate saved preference, not just "field absent").
+	explicit := legacy + "show_tasks_nav: false\nshow_templates_nav: false\n"
+	if err := os.WriteFile(configFilePath(v), []byte(explicit), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	cfg = loadConfig(v)
+	if cfg.ShowTasksNav {
+		t.Error("explicit show_tasks_nav: false in the file must be honored, not overridden back to true")
+	}
+	if cfg.ShowTemplatesNav {
+		t.Error("explicit show_templates_nav: false in the file must be honored, not overridden back to true")
+	}
+}
+
 func TestCmdInsertVarRequiresEditMode(t *testing.T) {
 	m := setupTUI(t)
 	m.cfg.Variables = map[string]string{"author": "Alex"}

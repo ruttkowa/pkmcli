@@ -16,13 +16,15 @@ const currentConfigVersion = 1
 
 // AppConfig holds user preferences persisted to .pkm/config.yaml.
 type AppConfig struct {
-	Version        int               `yaml:"version"`
-	Theme          string            `yaml:"theme"`
-	SidebarWidth   int               `yaml:"sidebar_width"`   // percent: 20, 25, 33
-	RestoreSession bool              `yaml:"restore_session"` // restore last note on startup
-	LineNumbers    bool              `yaml:"line_numbers"`    // show line numbers in editor
-	Keymap         Keymap            `yaml:"keymap"`
-	Variables      map[string]string `yaml:"variables"` // user-defined {{name}} substitutions for :insert
+	Version          int               `yaml:"version"`
+	Theme            string            `yaml:"theme"`
+	SidebarWidth     int               `yaml:"sidebar_width"`      // percent: 20, 25, 33
+	RestoreSession   bool              `yaml:"restore_session"`    // restore last note on startup
+	LineNumbers      bool              `yaml:"line_numbers"`       // show line numbers in editor
+	ShowTasksNav     bool              `yaml:"show_tasks_nav"`     // show the sidebar's Tasks quick-link
+	ShowTemplatesNav bool              `yaml:"show_templates_nav"` // show the sidebar's #templates section
+	Keymap           Keymap            `yaml:"keymap"`
+	Variables        map[string]string `yaml:"variables"` // user-defined {{name}} substitutions for :insert
 }
 
 // Keymap holds the remappable global keybindings. Values are bubbletea key
@@ -87,13 +89,15 @@ func sliceToKeymap(s []string) Keymap {
 
 func defaultConfig() AppConfig {
 	return AppConfig{
-		Version:        currentConfigVersion,
-		Theme:          "nord",
-		SidebarWidth:   25,
-		RestoreSession: true,
-		LineNumbers:    true,
-		Keymap:         defaultKeymap(),
-		Variables:      map[string]string{},
+		Version:          currentConfigVersion,
+		Theme:            "nord",
+		SidebarWidth:     25,
+		RestoreSession:   true,
+		LineNumbers:      true,
+		ShowTasksNav:     true,
+		ShowTemplatesNav: true,
+		Keymap:           defaultKeymap(),
+		Variables:        map[string]string{},
 	}
 }
 

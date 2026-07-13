@@ -25,6 +25,14 @@ type linkRef struct {
 // checkboxLineRe matches a Markdown task-list item: "- [ ] text" / "- [x] text".
 var checkboxLineRe = regexp.MustCompile(`^(\s*[-*]\s+)\[([ xX])\](.*)$`)
 
+// taskDateRe matches the Obsidian-Tasks-style completion-date stamp
+// (e.g. "✅ 2026-07-10") that toggleCheckboxLine adds to a task line when
+// it's marked done, wherever it appears in the line.
+var taskDateRe = regexp.MustCompile(`\s*✅\s*(\d{4}-\d{2}-\d{2})`)
+
+// taskResultSep separates task text from its result: "- [x] Task --> result".
+const taskResultSep = " --> "
+
 // codeSpan is a fenced code block located in the rendered body.
 type codeSpan struct {
 	startLine int // rendered line index (body-relative) of the first content line
@@ -247,6 +255,10 @@ func (m viewerModel) update(msg tea.KeyMsg, height int) (viewerModel, tea.Cmd) {
 		m = m.followCursor(height)
 	case "enter":
 		m = m.activateCursor()
+	case " ":
+		if rawLine, ok := m.checkboxRawLineAt(m.cursorRow); ok {
+			m.pendingCheckboxRaw = rawLine
+		}
 	case "esc", "backspace":
 		m.back = true
 	}
@@ -451,7 +463,43 @@ func (m viewerModel) codeSpanAt(renderedLine int) (codeSpan, bool) {
 	return codeSpan{}, false
 }
 
-// toggleCheckboxLine flips "[ ]" <-> "[x]" on the given raw line of body.
+// parseTaskLine splits the text following a checkbox marker (e.g. " Task
+// ✅ 2026-07-10 --> result") into its task text, completion date, and
+// result. Any of the three may be absent, and date/result may appear in
+// either order in the input — this is read-tolerant; formatTaskLine is what
+// pins the canonical write order (text, then date, then result).
+func parseTaskLine(rest string) (text, date, result string) {
+	rest = strings.TrimLeft(rest, " ")
+	if loc := taskDateRe.FindStringSubmatchIndex(rest); loc != nil {
+		date = rest[loc[2]:loc[3]]
+		rest = rest[:loc[0]] + rest[loc[1]:]
+	}
+	if idx := strings.Index(rest, taskResultSep); idx >= 0 {
+		result = strings.TrimSpace(rest[idx+len(taskResultSep):])
+		rest = rest[:idx]
+	}
+	text = strings.TrimRight(rest, " ")
+	return text, date, result
+}
+
+// formatTaskLine rebuilds the text following a checkbox marker in the
+// canonical order: text, then "✅ date" if set, then "--> result" if set.
+// Leads with a single space to match "- [ ] text" spacing.
+func formatTaskLine(text, date, result string) string {
+	s := text
+	if date != "" {
+		s += " ✅ " + date
+	}
+	if result != "" {
+		s += taskResultSep + result
+	}
+	return " " + s
+}
+
+// toggleCheckboxLine flips "[ ]" <-> "[x]" on the given raw line of body,
+// stamping today's completion date on it when marking done and stripping
+// the date when marking undone again (overwritten by repeated toggles, not
+// accumulated). Any existing result (" --> ...") is preserved either way.
 // ok is false if that line isn't a checkbox item (e.g. a stale raw-line
 // index after the note was edited elsewhere).
 func toggleCheckboxLine(body string, rawLine int) (string, bool) {
@@ -463,11 +511,16 @@ func toggleCheckboxLine(body string, rawLine int) (string, bool) {
 	if m == nil {
 		return body, false
 	}
-	mark := "x"
-	if m[2] == "x" || m[2] == "X" {
-		mark = " "
+	nowDone := !(m[2] == "x" || m[2] == "X")
+	mark := " "
+	text, date, result := parseTaskLine(m[3])
+	if nowDone {
+		mark = "x"
+		date = timeNow().Format("2006-01-02")
+	} else {
+		date = ""
 	}
-	lines[rawLine] = m[1] + "[" + mark + "]" + m[3]
+	lines[rawLine] = m[1] + "[" + mark + "]" + formatTaskLine(text, date, result)
 	return strings.Join(lines, "\n"), true
 }
 
@@ -475,8 +528,15 @@ func toggleCheckboxLine(body string, rawLine int) (string, bool) {
 // styling. Glamour's built-in styles only set a literal "## "/"### " prefix
 // for these levels (H1 alone gets a boxed, hash-free treatment), so without
 // this they render as plain colored text with the hash marks still visible.
+// It also brings fenced ``` code blocks to the same flat color/background
+// swatch as inline `code`, instead of glamour's default per-token chroma
+// syntax highlighting — the two rendered visibly differently otherwise.
 func headingStyleConfig(base ansi.StyleConfig) ansi.StyleConfig {
 	yes := true
+
+	base.CodeBlock.Chroma = nil
+	base.CodeBlock.Color = base.Code.Color
+	base.CodeBlock.BackgroundColor = base.Code.BackgroundColor
 	accent, sub, dim := "39", "35", "244"
 
 	base.H2.Prefix = ""
@@ -568,7 +628,10 @@ func annotateInteractive(body string) (string, []checkboxRef, []codeRef) {
 	inFence := false
 	fenceStart := 0
 
-	for i, line := range lines {
+	i := 0
+	for i < len(lines) {
+		line := lines[i]
+
 		if fenceLineRe.MatchString(line) {
 			if !inFence {
 				inFence = true
@@ -582,16 +645,56 @@ func annotateInteractive(body string) (string, []checkboxRef, []codeRef) {
 					lines[i-1] = lines[i-1] + codeClose
 				}
 			}
+			i++
 			continue
 		}
 		if inFence {
+			i++
 			continue
 		}
-		if m := checkboxLineRe.FindStringSubmatch(line); m != nil {
-			checked := m[2] == "x" || m[2] == "X"
-			checkboxRefs = append(checkboxRefs, checkboxRef{rawLine: i, checked: checked})
-			lines[i] = m[1] + "[" + m[2] + "]" + cbMark + m[3]
+		if checkboxLineRe.MatchString(line) {
+			// A "list" is a maximal run of consecutive checkbox lines (#12):
+			// gather it, then stable-partition unfinished-before-finished for
+			// DISPLAY, while each ref keeps its true original raw line index
+			// (idx) so toggling still edits the right line after the reorder.
+			// Never reorder across a non-checkbox line into another block.
+			blockStart := i
+			type cbLine struct {
+				idx     int
+				checked bool
+				text    string
+			}
+			var block []cbLine
+			for i < len(lines) {
+				m := checkboxLineRe.FindStringSubmatch(lines[i])
+				if m == nil {
+					break
+				}
+				block = append(block, cbLine{
+					idx:     i,
+					checked: m[2] == "x" || m[2] == "X",
+					text:    m[1] + "[" + m[2] + "]" + cbMark + m[3],
+				})
+				i++
+			}
+			var ordered []cbLine
+			for _, b := range block {
+				if !b.checked {
+					ordered = append(ordered, b)
+				}
+			}
+			for _, b := range block {
+				if b.checked {
+					ordered = append(ordered, b)
+				}
+			}
+			for j, b := range ordered {
+				lines[blockStart+j] = b.text
+				checkboxRefs = append(checkboxRefs, checkboxRef{rawLine: b.idx, checked: b.checked})
+			}
+			continue
 		}
+		i++
 	}
 	return strings.Join(lines, "\n"), checkboxRefs, codeRefs
 }
@@ -610,11 +713,24 @@ func processCheckboxesAndCode(rendered string, checkboxRefs []checkboxRef, codeR
 
 	for lineIdx, line := range lines {
 		if idx := strings.Index(line, cbMark); idx != -1 {
+			finished := false
 			if cbIdx < len(checkboxRefs) {
 				checkboxLines[lineIdx] = checkboxRefs[cbIdx].rawLine
+				finished = checkboxRefs[cbIdx].checked
 				cbIdx++
 			}
 			line = line[:idx] + line[idx+len(cbMark):]
+			if finished {
+				// #12: finished tasks get a permanent muted/table-like
+				// treatment instead of glamour's normal task-item styling,
+				// so the sunk-to-the-bottom group also reads as visually
+				// secondary. Re-tints in place (like the cursor's
+				// highlightPlain overlay) rather than rebuilding the line
+				// from scratch, so an already-rendered result wikilink
+				// (#11) keeps its alias text and stays clickable via the
+				// existing linkLines mapping — only the color changes.
+				line = highlightPlain(line, activeTheme.Bg, activeTheme.TextDim)
+			}
 		}
 		if idx := strings.Index(line, codeOpen); idx != -1 {
 			openCodeLine = lineIdx

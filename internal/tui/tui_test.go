@@ -3,6 +3,8 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -13,6 +15,22 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	xansi "github.com/charmbracelet/x/ansi"
 )
+
+// orderedCheckboxRawLines returns the raw body line index of each checkbox
+// in top-to-bottom RENDERED order (checkboxLines is keyed by rendered row,
+// so map iteration order says nothing about display order on its own).
+func orderedCheckboxRawLines(checkboxLines map[int]int) []int {
+	rows := make([]int, 0, len(checkboxLines))
+	for r := range checkboxLines {
+		rows = append(rows, r)
+	}
+	sort.Ints(rows)
+	raws := make([]int, len(rows))
+	for i, r := range rows {
+		raws[i] = checkboxLines[r]
+	}
+	return raws
+}
 
 // --- headless simulation helpers ---
 
@@ -128,6 +146,153 @@ func TestSubstituteLinks(t *testing.T) {
 		if !tc.working && !hasBroken {
 			t.Errorf("substituteLinks(%q): expected broken sentinel, got %q", tc.in, got)
 		}
+	}
+}
+
+// --- task line format (completion date + result, issue #11) ---
+
+func TestParseTaskLine(t *testing.T) {
+	cases := []struct {
+		in         string
+		wantText   string
+		wantDate   string
+		wantResult string
+	}{
+		{" Plain task", "Plain task", "", ""},
+		{" Task ✅ 2026-07-10", "Task", "2026-07-10", ""},
+		{" Task --> shipped in v2", "Task", "", "shipped in v2"},
+		{" Task ✅ 2026-07-10 --> shipped in v2", "Task", "2026-07-10", "shipped in v2"},
+		// Tolerate the non-canonical order too (result before date).
+		{" Task --> shipped in v2 ✅ 2026-07-10", "Task", "2026-07-10", "shipped in v2"},
+		// Result may itself be a wikilink.
+		{" Read paper --> [[202606241530 Notes]]", "Read paper", "", "[[202606241530 Notes]]"},
+	}
+	for _, tc := range cases {
+		text, date, result := parseTaskLine(tc.in)
+		if text != tc.wantText || date != tc.wantDate || result != tc.wantResult {
+			t.Errorf("parseTaskLine(%q) = (%q, %q, %q), want (%q, %q, %q)",
+				tc.in, text, date, result, tc.wantText, tc.wantDate, tc.wantResult)
+		}
+	}
+}
+
+func TestFormatTaskLineRoundTrip(t *testing.T) {
+	cases := []struct {
+		text, date, result string
+		want               string
+	}{
+		{"Plain task", "", "", " Plain task"},
+		{"Task", "2026-07-10", "", " Task ✅ 2026-07-10"},
+		{"Task", "", "shipped in v2", " Task --> shipped in v2"},
+		{"Task", "2026-07-10", "shipped in v2", " Task ✅ 2026-07-10 --> shipped in v2"},
+	}
+	for _, tc := range cases {
+		got := formatTaskLine(tc.text, tc.date, tc.result)
+		if got != tc.want {
+			t.Errorf("formatTaskLine(%q, %q, %q) = %q, want %q", tc.text, tc.date, tc.result, got, tc.want)
+		}
+		// Round-trip: formatting then parsing must recover the same fields.
+		text, date, result := parseTaskLine(got)
+		if text != tc.text || date != tc.date || result != tc.result {
+			t.Errorf("round-trip parseTaskLine(formatTaskLine(...)) = (%q, %q, %q), want (%q, %q, %q)",
+				text, date, result, tc.text, tc.date, tc.result)
+		}
+	}
+}
+
+func TestToggleCheckboxLineStampsAndStripsDate(t *testing.T) {
+	body := "- [ ] Task A"
+	got, ok := toggleCheckboxLine(body, 0)
+	if !ok {
+		t.Fatalf("toggle 1: ok = false")
+	}
+	today := timeNow().Format("2006-01-02")
+	want := "- [x] Task A ✅ " + today
+	if got != want {
+		t.Fatalf("toggle 1: got %q, want %q", got, want)
+	}
+
+	// Toggling back off must strip the date, not accumulate a second one.
+	got, ok = toggleCheckboxLine(got, 0)
+	if !ok {
+		t.Fatalf("toggle 2: ok = false")
+	}
+	if got != "- [ ] Task A" {
+		t.Fatalf("toggle 2: got %q, want %q", got, "- [ ] Task A")
+	}
+}
+
+func TestToggleCheckboxLinePreservesResult(t *testing.T) {
+	body := "- [ ] Task A --> [[Some Note]]"
+	got, ok := toggleCheckboxLine(body, 0)
+	if !ok {
+		t.Fatalf("toggle: ok = false")
+	}
+	today := timeNow().Format("2006-01-02")
+	want := "- [x] Task A ✅ " + today + " --> [[Some Note]]"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// TestHeadlessCursorActivateTaskResultLink covers issue #11's requirement
+// that a task result which parses as a [[wikilink]] is not just rendered as
+// a link (alias-only) but is actually openable via the block cursor + Enter,
+// same as any other wikilink in the body.
+func TestHeadlessCursorActivateTaskResultLink(t *testing.T) {
+	m := setupTUI(t)
+	target, err := m.vault.Create("Some Note")
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	m.index.Upsert(target)
+	m.titleSet[strings.ToLower(target.Title)] = true
+
+	n, err := m.vault.Create("Linker")
+	if err != nil {
+		t.Fatalf("create linker: %v", err)
+	}
+	n.Body = "- [x] Linked result ✅ 2026-07-10 --> [[Some Note]]"
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save linker: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+
+	sp := &m.splits[m.activeSplit]
+	sp.openNote(n)
+	l := m.computeLayout()
+	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+
+	found := false
+	for rl := range sp.viewer.linkLines {
+		sp.viewer.cursorRow = rl
+		found = true
+		break
+	}
+	if !found {
+		t.Fatalf("no link detected in task result; linkLines=%v rendered=%q", sp.viewer.linkLines, sp.viewer.rendered)
+	}
+	sp.viewer.cursorCol = 0
+
+	m = step(t, m, key("enter"), "activate task-result link under cursor")
+
+	got := m.splits[m.activeSplit].viewer.note
+	if got == nil || got.Title != "Some Note" {
+		t.Errorf("expected cursor-activated Enter to open Some Note via the task result link, got %v", got)
+	}
+}
+
+func TestToggleCheckboxLineBackwardCompatPlainLine(t *testing.T) {
+	// A pre-existing "- [x] text" line with no date/result must still parse
+	// and toggle correctly (undone: date-less, since none was ever set).
+	body := "- [x] Already done"
+	got, ok := toggleCheckboxLine(body, 0)
+	if !ok {
+		t.Fatalf("ok = false")
+	}
+	if got != "- [ ] Already done" {
+		t.Fatalf("got %q, want %q", got, "- [ ] Already done")
 	}
 }
 
@@ -425,6 +590,75 @@ func TestEditFromSidebarFocus(t *testing.T) {
 	}
 }
 
+// TestHeadlessEnterOnEmptyMarkerBreaksOutOfList covers the terminal-safe
+// stand-in for Shift+Enter: pressing Enter on a list/task marker with no
+// text typed after it clears the marker and drops to a plain blank line,
+// instead of auto-continuing the list. Enter on a marker WITH text must
+// still continue the list as before.
+func TestHeadlessEnterOnEmptyMarkerBreaksOutOfList(t *testing.T) {
+	cases := []struct {
+		name    string
+		typed   string
+		want    string
+		explain string
+	}{
+		{
+			name:  "checkbox marker with text still continues",
+			typed: "- [ ] Task",
+			want:  "- [ ] Task\n- [ ] ",
+		},
+		{
+			name:  "dash marker with text still continues",
+			typed: "- item",
+			want:  "- item\n- ",
+		},
+		{
+			name:  "numbered marker with text still continues",
+			typed: "1. item",
+			want:  "1. item\n2. ",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := setupTUI(t)
+			m = step(t, m, key("enter"), "enter (open note)")
+			m = step(t, m, key("e"), "e (open editor)")
+			m = typeString(t, m, tc.typed)
+			m = step(t, m, key("enter"), "enter (continue list)")
+			got := m.splits[m.activeSplit].editor.ta.Value()
+			if got != tc.want {
+				t.Fatalf("after typing %q + Enter: got %q, want %q", tc.typed, got, tc.want)
+			}
+		})
+	}
+
+	// Now the break-out case: Enter again on the freshly-continued, still-
+	// empty marker must clear it rather than adding yet another one.
+	breakOutCases := []struct {
+		name  string
+		typed string
+		want  string
+	}{
+		{name: "empty checkbox marker breaks out", typed: "- [ ] Task", want: "- [ ] Task\n"},
+		{name: "empty dash marker breaks out", typed: "- item", want: "- item\n"},
+		{name: "empty numbered marker breaks out", typed: "1. item", want: "1. item\n"},
+	}
+	for _, tc := range breakOutCases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := setupTUI(t)
+			m = step(t, m, key("enter"), "enter (open note)")
+			m = step(t, m, key("e"), "e (open editor)")
+			m = typeString(t, m, tc.typed)
+			m = step(t, m, key("enter"), "enter (continue list, now on empty marker)")
+			m = step(t, m, key("enter"), "enter again (break out of empty marker)")
+			got := m.splits[m.activeSplit].editor.ta.Value()
+			if got != tc.want {
+				t.Fatalf("after typing %q + Enter + Enter: got %q, want %q", tc.typed, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestHeadlessPalette(t *testing.T) {
 	m := setupTUI(t)
 
@@ -680,6 +914,333 @@ func TestHeadlessCursorActivateCheckbox(t *testing.T) {
 	}
 }
 
+// TestHeadlessCursorStaysPutAcrossReorderingToggle covers the #8/#12
+// interaction: toggling a task that causes it to sink to the bottom of its
+// block must hold the cursor's SCREEN ROW (not follow the task down), same
+// as an ordinary in-place toggle. applyCheckboxToggle's save/restore of
+// cursorRow/scrollOff around the re-render is identity-agnostic — it never
+// knows which task moved where — so this should already hold; this test
+// locks that in for the reordering case specifically.
+func TestHeadlessCursorStaysPutAcrossReorderingToggle(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("ReorderCursor")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	n.Body = "- [ ] Task A\n- [ ] Task B\n- [ ] Task C"
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+
+	sp := &m.splits[m.activeSplit]
+	sp.openNote(n)
+	l := m.computeLayout()
+	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+
+	// Cursor on "Task A" (raw line 0) — toggling it done will sink it below
+	// B and C, so its screen row should end up showing whatever is now in
+	// that slot ("Task B"), not follow "Task A" to the bottom.
+	var taskARow = -1
+	for rl, raw := range sp.viewer.checkboxLines {
+		if raw == 0 {
+			taskARow = rl
+		}
+	}
+	if taskARow < 0 {
+		t.Fatalf("raw line 0 not found: %v", sp.viewer.checkboxLines)
+	}
+	sp.viewer.cursorRow = taskARow
+	sp.viewer.scrollOff = 0
+
+	m = step(t, m, key("enter"), "toggle Task A (will sink)")
+
+	got := m.splits[m.activeSplit].viewer
+	if got.cursorRow != taskARow {
+		t.Errorf("cursorRow = %d after reordering toggle, want unchanged %d (screen-stable)", got.cursorRow, taskARow)
+	}
+	// The row the cursor now sits on should show Task B (which rose into
+	// Task A's old slot), not Task A (which sank away).
+	if raw, ok := got.checkboxLines[got.cursorRow]; !ok || raw != 1 {
+		t.Errorf("row under cursor maps to raw line %v, want raw line 1 (Task B rose into this slot)", raw)
+	}
+}
+
+// TestHeadlessFinishedTasksSinkWithDuplicateText is issue #12's discriminating
+// test: two tasks with IDENTICAL text, only one of which is toggled, in a
+// block that also has an already-finished task. This is what turns a
+// reorder-index-vs-raw-line-index bug into a silent wrong-line edit — if the
+// reorder logic uses the post-reorder walk position instead of preserving
+// each task's true raw body line, toggling the second "Buy milk" would
+// actually edit the wrong line (indistinguishable from the first by text
+// alone). Also covers the un-toggle case: a task un-toggled from the
+// finished group must return to the unfinished group.
+func TestHeadlessFinishedTasksSinkWithDuplicateText(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("Dupes")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	// raw line 0: unfinished "Buy milk"
+	// raw line 1: already finished "Already done"
+	// raw line 2: unfinished "Buy milk" (duplicate text of line 0)
+	n.Body = "- [ ] Buy milk\n- [x] Already done\n- [ ] Buy milk"
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+
+	sp := &m.splits[m.activeSplit]
+	sp.openNote(n)
+	l := m.computeLayout()
+	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+
+	// Display order must be: both unfinished (original relative order), then
+	// the already-finished one sinks to the bottom.
+	order := orderedCheckboxRawLines(sp.viewer.checkboxLines)
+	want := []int{0, 2, 1}
+	if len(order) != len(want) {
+		t.Fatalf("checkbox order = %v, want %v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("checkbox order = %v, want %v", order, want)
+		}
+	}
+
+	// Toggle the SECOND "Buy milk" (raw line 2), targeted via its display
+	// row per the map — not by text, since the text is ambiguous.
+	targetRow := -1
+	for rl, raw := range sp.viewer.checkboxLines {
+		if raw == 2 {
+			targetRow = rl
+		}
+	}
+	if targetRow < 0 {
+		t.Fatalf("raw line 2 not found in checkboxLines=%v", sp.viewer.checkboxLines)
+	}
+	sp.viewer.cursorRow = targetRow
+
+	m = step(t, m, key("enter"), "toggle the second Buy milk")
+
+	updated, err := m.vault.FindByTitle("Dupes")
+	if err != nil {
+		t.Fatalf("reload note: %v", err)
+	}
+	// vault's frontmatter round-trip leaves a leading blank line after a
+	// save+reload cycle (pre-existing, unrelated to #12) — strip it so the
+	// line indices below line up with the raw body we wrote.
+	lines := strings.Split(strings.TrimPrefix(updated.Body, "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("body = %q, want 3 lines", updated.Body)
+	}
+	if lines[0] != "- [ ] Buy milk" {
+		t.Errorf("raw line 0 (untouched duplicate) = %q, want unchanged %q", lines[0], "- [ ] Buy milk")
+	}
+	if lines[1] != "- [x] Already done" {
+		t.Errorf("raw line 1 (unrelated finished task) = %q, want unchanged %q", lines[1], "- [x] Already done")
+	}
+	if !strings.HasPrefix(lines[2], "- [x] Buy milk") {
+		t.Errorf("raw line 2 (the toggled duplicate) = %q, want it toggled to [x]", lines[2])
+	}
+
+	// Re-render: the newly-finished raw line 2 must now sink to the bottom,
+	// after the already-finished raw line 1 (finished group preserves
+	// original relative order), leaving only raw line 0 unfinished. Strip
+	// the reload's leading blank line (see above) so raw indices stay 0/1/2
+	// consistent with the first half of this test.
+	updated.Body = strings.TrimPrefix(updated.Body, "\n")
+	sp.viewer = sp.viewer.withNote(updated)
+	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+	order = orderedCheckboxRawLines(sp.viewer.checkboxLines)
+	want = []int{0, 1, 2}
+	if len(order) != len(want) {
+		t.Fatalf("post-toggle checkbox order = %v, want %v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("post-toggle checkbox order = %v, want %v", order, want)
+		}
+	}
+
+	// Un-toggle raw line 2: it must pop back OUT of the finished group.
+	targetRow = -1
+	for rl, raw := range sp.viewer.checkboxLines {
+		if raw == 2 {
+			targetRow = rl
+		}
+	}
+	if targetRow < 0 {
+		t.Fatalf("raw line 2 not found after re-render: %v", sp.viewer.checkboxLines)
+	}
+	sp.viewer.cursorRow = targetRow
+	m = step(t, m, key("enter"), "un-toggle the second Buy milk")
+
+	reverted, err := m.vault.FindByTitle("Dupes")
+	if err != nil {
+		t.Fatalf("reload note: %v", err)
+	}
+	revLines := strings.Split(strings.TrimPrefix(reverted.Body, "\n"), "\n")
+	if revLines[2] != "- [ ] Buy milk" {
+		t.Errorf("raw line 2 after un-toggle = %q, want reverted to %q", revLines[2], "- [ ] Buy milk")
+	}
+	if revLines[0] != "- [ ] Buy milk" || revLines[1] != "- [x] Already done" {
+		t.Errorf("un-toggle mutated an unrelated line: body=%q", reverted.Body)
+	}
+}
+
+// TestProcessCheckboxesAndCodeMutesFinishedTasks covers #12's table-like/
+// secondary styling requirement directly at the unit level (independent of
+// glamour's own color-profile detection, which differs between a real
+// render and a raw lipgloss call in a headless test environment): a
+// finished task's rendered line must come out re-tinted (different from its
+// glamour-rendered input), while an unfinished task's line must pass
+// through with only the sentinel stripped, untouched otherwise.
+func TestProcessCheckboxesAndCodeMutesFinishedTasks(t *testing.T) {
+	unfinishedGlamourLine := "\x1b[38;5;252m[ ] Not done\x1b[0m"
+	finishedGlamourLine := "\x1b[38;5;252m[x] Done\x1b[0m"
+	insertCBMark := func(s string) string {
+		idx := strings.Index(s, "] ") + len("] ")
+		return s[:idx] + cbMark + s[idx:]
+	}
+	rendered := strings.Join([]string{
+		insertCBMark(unfinishedGlamourLine),
+		insertCBMark(finishedGlamourLine),
+	}, "\n")
+
+	refs := []checkboxRef{
+		{rawLine: 0, checked: false},
+		{rawLine: 1, checked: true},
+	}
+
+	out, checkboxLines, _ := processCheckboxesAndCode(rendered, refs, nil)
+	outLines := strings.Split(out, "\n")
+
+	if checkboxLines[0] != 0 || checkboxLines[1] != 1 {
+		t.Fatalf("checkboxLines = %v, want {0:0, 1:1}", checkboxLines)
+	}
+
+	if outLines[0] != unfinishedGlamourLine {
+		t.Errorf("unfinished line = %q, want unchanged %q (only sentinel stripped)", outLines[0], unfinishedGlamourLine)
+	}
+	if outLines[1] == finishedGlamourLine {
+		t.Errorf("finished line was not re-tinted, still equals glamour's original rendering: %q", outLines[1])
+	}
+	// Re-tinted output must still be plain-decodable back to the same text
+	// (highlightPlain strips then re-renders — content must survive).
+	if plain := xansi.Strip(outLines[1]); plain != "[x] Done" {
+		t.Errorf("finished line's plain text = %q, want %q", plain, "[x] Done")
+	}
+}
+
+// TestHeadlessSpaceTogglesCheckbox covers pressing Space while the block
+// cursor sits anywhere on a task-list line (not just on the checkbox
+// itself): it should toggle it the same as Enter. Space on a non-task line
+// must be a no-op — it should not fall through to Enter's link/code-copy
+// behavior.
+func TestHeadlessSpaceTogglesCheckbox(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("SpaceTasks")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	n.Body = "Not a task line\n- [ ] Task one"
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+
+	sp := &m.splits[m.activeSplit]
+	sp.openNote(n)
+	l := m.computeLayout()
+	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+
+	// Space on the plain text line must do nothing.
+	plainRow := -1
+	for row := range strings.Split(sp.viewer.rendered, "\n") {
+		if _, ok := sp.viewer.checkboxLines[row]; !ok {
+			plainRow = row
+			break
+		}
+	}
+	if plainRow < 0 {
+		t.Fatalf("expected a non-checkbox row in rendered body: %q", sp.viewer.rendered)
+	}
+	sp.viewer.cursorRow = plainRow
+	sp.viewer.cursorCol = 3 // mid-line, nowhere near a checkbox
+	m = step(t, m, key(" "), "space on plain line")
+	unchanged, err := m.vault.FindByTitle("SpaceTasks")
+	if err != nil {
+		t.Fatalf("reload note: %v", err)
+	}
+	if strings.Contains(unchanged.Body, "[x]") {
+		t.Errorf("space on a non-task line must not toggle anything, got body=%q", unchanged.Body)
+	}
+
+	// Space anywhere on the checkbox line, cursor NOT over the box itself,
+	// must still toggle it.
+	found := false
+	for row := range sp.viewer.checkboxLines {
+		sp.viewer.cursorRow = row
+		found = true
+		break
+	}
+	if !found {
+		t.Fatalf("no checkbox detected; checkboxLines=%v", sp.viewer.checkboxLines)
+	}
+	sp.viewer.cursorCol = 20 // past the "[ ] " marker, into the task text
+
+	m = step(t, m, key(" "), "space over checkbox line")
+	updated, err := m.vault.FindByTitle("SpaceTasks")
+	if err != nil {
+		t.Fatalf("reload note: %v", err)
+	}
+	if !strings.Contains(updated.Body, "[x]") {
+		t.Errorf("expected checkbox toggled to [x] via Space, got body=%q", updated.Body)
+	}
+}
+
+// TestHeadlessVaultChangedPreservesCursor guards against a regression where
+// toggling a checkbox saved the note to disk, the fsnotify watcher fired a
+// vaultChangedMsg, and the resulting reload snapped the viewer's cursor and
+// scroll position back to the top instead of leaving it where the user was.
+func TestHeadlessVaultChangedPreservesCursor(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("Long Note")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	n.Body = strings.Repeat("line of body text\n", 40)
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+
+	sp := &m.splits[m.activeSplit]
+	sp.openNote(n)
+	l := m.computeLayout()
+	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+
+	sp.viewer.cursorRow = 10
+	sp.viewer.cursorCol = 2
+	sp.viewer.scrollOff = 5
+
+	// Simulate the async reload the watcher triggers after a save elsewhere
+	// (e.g. a checkbox toggle) touches the same note.
+	reloaded := *n
+	model, _ := m.Update(vaultChangedMsg{note: &reloaded})
+	m = model.(Model)
+
+	got := m.splits[m.activeSplit].viewer
+	if got.cursorRow != 10 || got.cursorCol != 2 || got.scrollOff != 5 {
+		t.Errorf("cursor/scroll position not preserved across vaultChangedMsg: got row=%d col=%d scroll=%d, want row=10 col=2 scroll=5", got.cursorRow, got.cursorCol, got.scrollOff)
+	}
+}
+
 // TestHeadlessCursorActivateCodeCopy covers pressing Enter while the block
 // cursor sits inside a fenced code block: it should trigger a clipboard-copy
 // command and report status, without mutating the note.
@@ -710,6 +1271,64 @@ func TestHeadlessCursorActivateCodeCopy(t *testing.T) {
 
 	if m.statusMsg != "copied code block" {
 		t.Errorf("expected status %q, got %q", "copied code block", m.statusMsg)
+	}
+}
+
+// TestHeadlessFencedCodeMatchesInlineCodeStyle guards against fenced ```
+// code blocks rendering with glamour's default per-token chroma syntax
+// highlighting (many distinct colors) while inline `code` spans render with
+// a single flat color/background swatch. After the fix both must use the
+// same flat styling — this asserts the fenced block collapses to exactly
+// the SGR color codes inline code uses, not a rainbow of token colors.
+func TestHeadlessFencedCodeMatchesInlineCodeStyle(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("Styled")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	// Multiple distinct token types (keyword, string, comment, call) so
+	// chroma highlighting, if still active, would emit several different
+	// foreground colors instead of one.
+	n.Body = "Some `inline code` here.\n\n```go\n" +
+		"// a comment\nfunc main() {\n\tfmt.Println(\"hello\")\n}\n```"
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+
+	sp := &m.splits[m.activeSplit]
+	sp.openNote(n)
+	l := m.computeLayout()
+	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+
+	if len(sp.viewer.codeSpans) == 0 {
+		t.Fatalf("no code span detected")
+	}
+	span := sp.viewer.codeSpans[0]
+	lines := strings.Split(sp.viewer.rendered, "\n")
+	if span.endLine >= len(lines) {
+		t.Fatalf("code span range %v out of bounds (%d rendered lines)", span, len(lines))
+	}
+	blockText := strings.Join(lines[span.startLine:span.endLine+1], "\n")
+
+	colorSeqRe := regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	blockColors := map[string]bool{}
+	for _, c := range colorSeqRe.FindAllString(blockText, -1) {
+		blockColors[c] = true
+	}
+
+	// A reset code ("\x1b[0m"/"\x1b[m") is not a color; every other distinct
+	// sequence found must be the SAME single color pairing throughout the
+	// block. Chroma syntax highlighting would produce several.
+	nonReset := map[string]bool{}
+	for c := range blockColors {
+		if c != "\x1b[0m" && c != "\x1b[m" {
+			nonReset[c] = true
+		}
+	}
+	if len(nonReset) > 2 { // one foreground + one background code, at most
+		t.Errorf("fenced code block uses %d distinct color codes (%v), want a flat swatch like inline code (<=2)", len(nonReset), nonReset)
 	}
 }
 
@@ -1068,10 +1687,11 @@ func TestSidebarExpandCollapse(t *testing.T) {
 	if !m.sidebar.expanded[vault.StateInbox] {
 		t.Fatal("Inbox should be expanded after Enter")
 	}
-	// Two notes were seeded, so items should be: Inbox, note1, note2, Projects, ..., #templates
+	// Two notes were seeded, so items should be: Inbox, note1, note2, Projects,
+	// ..., #templates, Tasks (the latter two are always-visible virtual rows).
 	items := m.sidebar.items()
-	if len(items) != len(vault.AllStates)+1+2 {
-		t.Errorf("expected %d items after expand, got %d", len(vault.AllStates)+1+2, len(items))
+	if len(items) != len(vault.AllStates)+2+2 {
+		t.Errorf("expected %d items after expand, got %d", len(vault.AllStates)+2+2, len(items))
 	}
 	if items[1].isSection {
 		t.Error("items[1] should be a note, not a section")
@@ -1102,8 +1722,8 @@ func TestSidebarExpandCollapse(t *testing.T) {
 		t.Error("Inbox should be collapsed after second Enter")
 	}
 	items = m.sidebar.items()
-	if len(items) != len(vault.AllStates)+1 {
-		t.Errorf("expected %d items after collapse, got %d", len(vault.AllStates)+1, len(items))
+	if len(items) != len(vault.AllStates)+2 {
+		t.Errorf("expected %d items after collapse, got %d", len(vault.AllStates)+2, len(items))
 	}
 }
 
@@ -1200,6 +1820,69 @@ func TestHeadlessDeleteThenUndo(t *testing.T) {
 	}
 	if !m.titleSet[strings.ToLower("Doomed")] {
 		t.Error("expected titleSet entry restored after undo")
+	}
+}
+
+// TestHeadlessEscSavesEditorDraft guards against the editor silently
+// discarding an in-progress edit on Esc: leaving the editor by any route must
+// persist the draft (and register an undo step), never lose it.
+func TestHeadlessEscSavesEditorDraft(t *testing.T) {
+	m := setupTUI(t)
+	m = step(t, m, key("enter"), "enter (open note)")
+	m = step(t, m, key("e"), "e (open editor)")
+	sp := m.splits[m.activeSplit]
+	if sp.activeView != viewEdit {
+		t.Fatal("expected viewEdit")
+	}
+	title := sp.editor.note.Title
+
+	m = typeString(t, m, "unsaved change")
+	stackLen := len(m.undoStack)
+
+	m = step(t, m, key("esc"), "esc (exit editor without explicit save)")
+	sp = m.splits[m.activeSplit]
+	if sp.activeView == viewEdit {
+		t.Fatal("expected editor to close on Esc")
+	}
+
+	n, err := m.vault.FindByTitle(title)
+	if err != nil {
+		t.Fatalf("FindByTitle: %v", err)
+	}
+	if !strings.Contains(n.Body, "unsaved change") {
+		t.Errorf("body on disk = %q, want it to contain the typed text", n.Body)
+	}
+	if len(m.undoStack) != stackLen+1 {
+		t.Errorf("undoStack len = %d, want %d (Esc-save should push an undo record)", len(m.undoStack), stackLen+1)
+	}
+
+	m.handleUndo()
+	restored, err := m.vault.FindByTitle(title)
+	if err != nil {
+		t.Fatalf("FindByTitle after undo: %v", err)
+	}
+	if strings.Contains(restored.Body, "unsaved change") {
+		t.Error("expected undo to revert the Esc-saved change")
+	}
+}
+
+// TestHeadlessEscOnCleanEditorIsNoop guards against the Esc-saves fix
+// (TestHeadlessEscSavesEditorDraft) spamming the undo stack when nothing
+// changed — opening and immediately closing the editor must not save or
+// push an undo record.
+func TestHeadlessEscOnCleanEditorIsNoop(t *testing.T) {
+	m := setupTUI(t)
+	m = step(t, m, key("enter"), "enter (open note)")
+	m = step(t, m, key("e"), "e (open editor)")
+	stackLen := len(m.undoStack)
+
+	m = step(t, m, key("esc"), "esc (exit editor with no changes)")
+	sp := m.splits[m.activeSplit]
+	if sp.activeView == viewEdit {
+		t.Fatal("expected editor to close on Esc")
+	}
+	if len(m.undoStack) != stackLen {
+		t.Errorf("undoStack len = %d, want unchanged %d (clean Esc must be a no-op save)", len(m.undoStack), stackLen)
 	}
 }
 
@@ -1340,6 +2023,365 @@ func TestHeadlessImportPopoverEsc(t *testing.T) {
 	m = step(t, m, key("esc"), "esc (cancel)")
 	if m.showImport {
 		t.Error("expected showImport=false after Esc")
+	}
+}
+
+// --- Config: show/hide Tasks nav and Templates (issue #14) ---
+
+// TestApplyConfigItemTogglesTasksNavVisibility covers the sidebar reacting
+// live to the config toggle, and the cursor being clamped if it was sitting
+// on a row that just disappeared.
+func TestApplyConfigItemTogglesTasksNavVisibility(t *testing.T) {
+	m := setupTUI(t)
+	if !m.cfg.ShowTasksNav {
+		t.Fatal("expected ShowTasksNav to default true")
+	}
+
+	items := m.sidebar.items()
+	tasksIdx := -1
+	for i, it := range items {
+		if it.isTasks {
+			tasksIdx = i
+			break
+		}
+	}
+	if tasksIdx < 0 {
+		t.Fatalf("expected a Tasks row by default: %+v", items)
+	}
+	m.sidebar.cursor = tasksIdx // park the cursor on the row about to vanish
+
+	m.applyConfigItem(cfgItemShowTasksNav, 1) // valueIdx 1 == "off"
+
+	if m.cfg.ShowTasksNav {
+		t.Error("expected cfg.ShowTasksNav = false after toggling off")
+	}
+	items = m.sidebar.items()
+	for _, it := range items {
+		if it.isTasks {
+			t.Fatalf("Tasks row still present after toggling ShowTasksNav off: %+v", items)
+		}
+	}
+	if m.sidebar.cursor >= len(items) {
+		t.Errorf("cursor = %d not clamped after hiding a row (len=%d)", m.sidebar.cursor, len(items))
+	}
+
+	// Toggle back on: the row must return.
+	m.applyConfigItem(cfgItemShowTasksNav, 0) // valueIdx 0 == "on"
+	if !m.cfg.ShowTasksNav {
+		t.Error("expected cfg.ShowTasksNav = true after toggling on")
+	}
+	found := false
+	for _, it := range m.sidebar.items() {
+		if it.isTasks {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Tasks row did not return after toggling ShowTasksNav back on")
+	}
+}
+
+// TestApplyConfigItemTogglesTemplatesNavIndependently covers the other half
+// of #14 — Templates visibility must be independent of the Tasks flag.
+func TestApplyConfigItemTogglesTemplatesNavIndependently(t *testing.T) {
+	m := setupTUI(t)
+
+	m.applyConfigItem(cfgItemShowTemplatesNav, 1) // off
+
+	items := m.sidebar.items()
+	hasTemplates, hasTasks := false, false
+	for _, it := range items {
+		if it.isTemplates && it.isSection {
+			hasTemplates = true
+		}
+		if it.isTasks {
+			hasTasks = true
+		}
+	}
+	if hasTemplates {
+		t.Error("expected #templates row hidden after toggling ShowTemplatesNav off")
+	}
+	if !hasTasks {
+		t.Error("Tasks row should remain visible — ShowTemplatesNav must not affect it")
+	}
+}
+
+// --- Task Overview (issue #13) ---
+
+// TestBuildTaskOverviewRows covers the grouping/ordering rules: active
+// projects in sidebar order, files sorted by title within each group, an
+// "Unassigned" trailing group for non-project notes, and notes with no
+// tasks (or projects with no task-bearing notes) excluded entirely.
+func TestBuildTaskOverviewRows(t *testing.T) {
+	m := setupTUI(t)
+
+	// Two projects, created in an order that differs from alphabetical, to
+	// prove grouping follows Projects.ListActive() order, not name sort.
+	if _, err := m.vault.Projects.Create("Zeta"); err != nil {
+		t.Fatalf("create project Zeta: %v", err)
+	}
+	if _, err := m.vault.Projects.Create("Alpha"); err != nil {
+		t.Fatalf("create project Alpha: %v", err)
+	}
+	// A third project with no task-bearing notes must not appear at all.
+	if _, err := m.vault.Projects.Create("Empty Project"); err != nil {
+		t.Fatalf("create project Empty Project: %v", err)
+	}
+
+	mkNote := func(title string, state vault.NoteState, project, body string) *vault.Note {
+		n, err := m.vault.Create(title)
+		if err != nil {
+			t.Fatalf("create %q: %v", title, err)
+		}
+		n.State = state
+		n.Project = project
+		n.Body = body
+		if err := m.vault.Save(n); err != nil {
+			t.Fatalf("save %q: %v", title, err)
+		}
+		return n
+	}
+
+	// Zeta: two notes, out-of-title-order creation to prove file sort.
+	mkNote("Zeta Second File", vault.StateProjects, "Zeta", "- [ ] Zeta task B")
+	mkNote("Zeta First File", vault.StateProjects, "Zeta", "- [ ] Zeta task A")
+	// Alpha: one note.
+	mkNote("Alpha File", vault.StateProjects, "Alpha", "- [x] Alpha task")
+	// Empty Project: a note assigned to it, but with no task lines — the
+	// project must not appear in the overview at all.
+	mkNote("Alpha File Untasked", vault.StateProjects, "Empty Project", "just prose, no tasks")
+	// Unassigned: an Inbox note with a task.
+	mkNote("Loose Inbox Note", vault.StateInbox, "", "- [ ] Loose task")
+	// A note with zero tasks anywhere must not create any row.
+	mkNote("Totally Task-Free", vault.StateInbox, "", "no tasks here either")
+
+	rows := buildTaskOverviewRows(m.vault)
+
+	var got []string
+	for _, r := range rows {
+		switch {
+		case r.projectHeader != "":
+			got = append(got, "H1:"+r.projectHeader)
+		case r.fileNote != nil:
+			got = append(got, "H2:"+r.fileNote.Title)
+		case r.task != nil:
+			got = append(got, "T:"+r.task.text)
+		}
+	}
+
+	want := []string{
+		"H1:Zeta",
+		"H2:Zeta First File", "T:Zeta task A",
+		"H2:Zeta Second File", "T:Zeta task B",
+		"H1:Alpha",
+		"H2:Alpha File", "T:Alpha task",
+		"H1:Unassigned",
+		"H2:Loose Inbox Note", "T:Loose task",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("rows = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("row %d = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+func TestHeadlessTasksCommandOpensOverview(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("With Tasks")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	n.Body = "- [ ] Do the thing"
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+
+	m = step(t, m, key(":"), "colon (open palette)")
+	m = typeInPalette(t, m, "tasks")
+	m = step(t, m, key("enter"), "enter (run :tasks)")
+
+	sp := m.splits[m.activeSplit]
+	if sp.activeView != viewTasksOverview {
+		t.Fatalf("expected viewTasksOverview, got %v", sp.activeView)
+	}
+	if len(sp.taskRows) == 0 {
+		t.Fatal("expected at least one task row after :tasks")
+	}
+	if !strings.Contains(m.renderBreadcrumb(), "Tasks") {
+		t.Errorf("breadcrumb = %q, want it to mention Tasks", m.renderBreadcrumb())
+	}
+}
+
+// TestHeadlessTasksOverviewCursorOpensSourceNote covers the core v1
+// interaction: moving the cursor onto a task row and pressing Enter opens
+// that task's source note, leaving the overview.
+func TestHeadlessTasksOverviewCursorOpensSourceNote(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("Task Source")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	n.Body = "- [ ] Do the thing"
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+
+	m.openTasksOverview()
+	sp := &m.splits[m.activeSplit]
+
+	taskRow := -1
+	for i, r := range sp.taskRows {
+		if r.task != nil {
+			taskRow = i
+			break
+		}
+	}
+	if taskRow < 0 {
+		t.Fatalf("no task row found: %v", sp.taskRows)
+	}
+	sp.taskCursorRow = taskRow
+
+	m = step(t, m, key("enter"), "enter (open task's source note)")
+
+	got := m.splits[m.activeSplit].viewer.note
+	if got == nil || got.Title != "Task Source" {
+		t.Errorf("expected Enter to open Task Source, got %v", got)
+	}
+	if m.splits[m.activeSplit].activeView != viewNote {
+		t.Errorf("expected activeView=viewNote after opening, got %v", m.splits[m.activeSplit].activeView)
+	}
+}
+
+func TestHeadlessTasksOverviewEscReturnsToList(t *testing.T) {
+	m := setupTUI(t)
+	m.openTasksOverview()
+	m = step(t, m, key("esc"), "esc (close task overview)")
+	if m.splits[m.activeSplit].activeView != viewList {
+		t.Errorf("expected viewList after Esc, got %v", m.splits[m.activeSplit].activeView)
+	}
+}
+
+// TestHeadlessSidebarTasksRowKeyboard covers navigating the sidebar cursor
+// to the virtual Tasks row and activating it with Enter.
+func TestHeadlessSidebarTasksRowKeyboard(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("Has A Task")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	n.Body = "- [ ] Something"
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+
+	m = step(t, m, key("tab"), "tab (-> sidebar)")
+	if m.activePane != paneSidebar {
+		t.Fatal("expected focus on sidebar")
+	}
+
+	items := m.sidebar.items()
+	tasksIdx := -1
+	for i, it := range items {
+		if it.isTasks {
+			tasksIdx = i
+			break
+		}
+	}
+	if tasksIdx < 0 {
+		t.Fatalf("no Tasks row found in sidebar items: %+v", items)
+	}
+	m.sidebar.cursor = tasksIdx
+
+	m = step(t, m, key("enter"), "enter (activate Tasks row)")
+
+	if m.splits[m.activeSplit].activeView != viewTasksOverview {
+		t.Errorf("expected viewTasksOverview, got %v", m.splits[m.activeSplit].activeView)
+	}
+	if m.activePane != paneMain {
+		t.Error("expected focus to move to main pane")
+	}
+	if !m.sidebar.tasksActive {
+		t.Error("expected sidebar.tasksActive=true")
+	}
+}
+
+// TestHeadlessSidebarTasksRowDoesNotCorruptInboxState guards against the
+// zero-value trap: sidebarItem{isTasks: true} has a zero-value (empty
+// string) NoteState, which — without explicit isTasks guards — could
+// alias real sidebar state machinery keyed by NoteState (e.g. s.expanded,
+// a fresh map defaulting every unset key, including "", to false/zero).
+// Exercise every keyboard branch (left, right, enter) on the Tasks row and
+// confirm the real Inbox section's expand/active state is never touched.
+func TestHeadlessSidebarTasksRowDoesNotCorruptInboxState(t *testing.T) {
+	m := setupTUI(t)
+	m = step(t, m, key("tab"), "tab (-> sidebar)")
+
+	items := m.sidebar.items()
+	tasksIdx := -1
+	for i, it := range items {
+		if it.isTasks {
+			tasksIdx = i
+			break
+		}
+	}
+	if tasksIdx < 0 {
+		t.Fatalf("no Tasks row found: %+v", items)
+	}
+	m.sidebar.cursor = tasksIdx
+
+	for _, k := range []string{"left", "right", "enter"} {
+		msg := key(k)
+		if k == "left" || k == "right" {
+			msg = tea.KeyMsg{Type: map[string]tea.KeyType{"left": tea.KeyLeft, "right": tea.KeyRight}[k]}
+		}
+		var cmd tea.Cmd
+		m.sidebar, cmd = m.sidebar.update(msg)
+		_ = cmd
+	}
+
+	if m.sidebar.expanded[vault.StateInbox] {
+		t.Error("activating the Tasks row must not expand the Inbox section")
+	}
+	if m.sidebar.activeState == "" {
+		t.Error("sidebar.activeState must not be set to the zero-value NoteState")
+	}
+}
+
+// TestHeadlessSidebarTasksRowMouseClick covers the mouse-click path into
+// the Tasks row, which is a separate code path from keyboard Enter
+// (handleMouseClick acts immediately rather than going through
+// sidebarModel.update + the m.sidebar.selected dispatcher).
+func TestHeadlessSidebarTasksRowMouseClick(t *testing.T) {
+	m := setupTUI(t)
+
+	items := m.sidebar.items()
+	tasksIdx := -1
+	for i, it := range items {
+		if it.isTasks {
+			tasksIdx = i
+			break
+		}
+	}
+	if tasksIdx < 0 {
+		t.Fatalf("no Tasks row found: %+v", items)
+	}
+	// Matches handleMouseClick's itemIdx := y - 4.
+	y := tasksIdx + 4
+	m = step(t, m, click(2, y), "click Tasks row")
+
+	if m.splits[m.activeSplit].activeView != viewTasksOverview {
+		t.Errorf("expected viewTasksOverview after click, got %v", m.splits[m.activeSplit].activeView)
+	}
+	if !m.sidebar.tasksActive {
+		t.Error("expected sidebar.tasksActive=true after click")
 	}
 }
 

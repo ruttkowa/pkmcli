@@ -159,6 +159,10 @@ The note-list view (search results, section browsing).
 - on a **checkbox** — toggles `- [ ]` ↔ `- [x]` and saves
 - on a **code block** — copies its contents to the clipboard via OSC 52 (works over SSH and inside tmux/zellij)
 
+`Space` also toggles a checkbox, as long as the cursor is anywhere on that task's line — not just on the `[ ]` itself. On a non-task line, `Space` does nothing (it doesn't open links or copy code, unlike `Enter`).
+
+**Finished tasks sink to the bottom.** Within each contiguous block of task lines, unfinished tasks are always shown first and finished tasks last (each group keeping its original relative order) — toggling a task done moves it to the bottom of its block on screen, and un-toggling moves it back. This is display-only: the `.md` file's line order never changes, only the rendered position. Finished tasks also render with a muted, secondary style so the unfinished ones stand out. The checkbox stays toggleable in place either way (un-toggle an accidental done the same way you toggled it).
+
 The bottom row of the pane is a fixed footer showing `Last saved: HH:MM:SS` (from the note's `updated` frontmatter field) alongside the scroll percentage — not shown in the global hotkey bar.
 
 ### Editor
@@ -168,7 +172,7 @@ Opened with `e`. Captures all input — the only thing that reaches it from outs
 | Key | Action |
 |---|---|
 | **Save** (`Ctrl+S`) | Commit the draft and return to the viewer |
-| `Esc` | Discard changes and return to the viewer |
+| `Esc` | Save the draft (if changed) and return to the viewer — same as **Save**, just via a different key. `Ctrl+Z` undoes it afterward like any other save. |
 | `Tab` / `Shift+Tab` | Cycle focus: State → Tags → Project → Body |
 | `←`/`h`, `→`/`l`/`Enter` | Cycle value (State field only) |
 
@@ -178,7 +182,7 @@ In the body field:
 |---|---|
 | `[`, `(`, `` ` `` | Auto-pairs `[]`, `()`, `` `` `` with the cursor placed between |
 | `]`, `)`, `` ` `` | Skips over the matching closer if the cursor is right before one |
-| `Enter` | Continues `- `, `- [ ] `/`- [x] `, `* `, and numbered (`1.` → `2.`) lists |
+| `Enter` | Continues `- `, `- [ ] `/`- [x] `, `* `, and numbered (`1.` → `2.`) lists. Pressing it again on a marker with no text after it (i.e. right after the previous Enter auto-added one) clears that marker instead of adding another — the way to break out of a list. (This app's Bubble Tea/terminal stack can't distinguish `Shift+Enter` from plain `Enter`, so this empty-marker break-out stands in for it.) |
 
 Typing inside an unclosed `[[fragment]]` opens a link-autosuggest dropdown:
 
@@ -207,6 +211,19 @@ Composing a bridge entry (captures all input until submitted or cancelled):
 | `Esc` | Cancel, discard the draft entry |
 | `Backspace` / `Ctrl+H` | Delete last character |
 | `Ctrl+U` | Clear the line |
+
+### Task Overview
+
+Opened with `:tasks` or the sidebar's **Tasks** row (below `#templates`; shown by default — see [Configuration](#configuration) to hide it). Scans every note in the vault for checkbox lines and groups them: each active project with task-bearing notes gets a heading, its notes (sorted by title) each get a sub-heading followed by their tasks in file order; a trailing **Unassigned** group covers every other task-bearing note the same way. Read-only in v1 — toggling a task's checkbox from here isn't supported yet, only opening its source note.
+
+| Key | Action |
+|---|---|
+| `j` / `↓`, `k` / `↑` | Move the row cursor |
+| `g` / `G` | Jump to the first / last row |
+| `Enter` | Open the source note of the task under the cursor (no-op on a heading row) |
+| `Esc` / `Backspace` | Close and return to the note list |
+
+The overview is assembled fresh each time it's opened (there's no persistent task index yet), so it always reflects the vault as it is right now.
 
 ### Config Overlay
 
@@ -286,6 +303,7 @@ The verb list reorders a little depending on where you opened it from — e.g. o
 | `:archive <note>` | Shortcut for `:move <note> → archive` | `A` |
 | `:delete <note>` | Permanently delete a note (`Ctrl+Z` undoes it — see note below) | `D` |
 | `:import [path]` | Open the import popover (path pre-filled if given) — see note below | `I` (opens directly, no palette) |
+| `:tasks` | Show every task in the vault, grouped by project then file | — |
 | `:split [note]` | Open a new side-by-side pane, optionally pre-loaded | — |
 | `:close` | Close the focused pane (blocked if it's the last one) | — |
 | `:theme <name>` | `nord` · `solarized` · `dracula` · `gruvbox` · `tokyonight` | — |
@@ -434,6 +452,15 @@ tags:
 Note body here. [[Wikilinks]] are supported.
 ```
 
+**Tasks:** standard Markdown checkboxes, `- [ ]` / `- [x]`. Plain checkboxes with no metadata are always valid — nothing is rewritten until the box is actually toggled. A checkbox line may optionally carry a completion date and a result, in canonical order `text ✅ YYYY-MM-DD --> result`:
+
+```
+- [x] Ship the thing ✅ 2026-07-10 --> shipped in v2
+- [x] Read paper ✅ 2026-07-10 --> [[202606241530 Notes]]
+```
+
+The date is stamped when a task is toggled done and stripped when toggled back to undone (overwritten by repeated toggles, not accumulated). A result is free text after `-->`; if it parses as a `[[wikilink]]` it renders and opens as a link like any other wikilink. See [Task Overview](#task-overview) for the `:tasks` view that collects every task in the vault.
+
 ---
 
 ## Links
@@ -478,8 +505,12 @@ Open the config menu with `:config` (see [Config Overlay](#config-overlay) for t
 | Sidebar width | 20%, 25%, 33% | 25% |
 | Restore session | on, off | on |
 | Line numbers | on, off | on |
+| Show Tasks nav | on, off | on |
+| Show Templates nav | on, off | on |
 
 Session state (last open note, active section) is saved on quit and restored on next launch when "Restore session" is on.
+
+"Show Tasks nav" and "Show Templates nav" control whether the sidebar's **Tasks** row and `#templates` section are shown at all — independent of each other, and applied live the moment you toggle them (no need to close the overlay first).
 
 ### Keybindings
 
