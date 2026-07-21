@@ -97,6 +97,11 @@ var allCommands = []cmdDef{
 		slots:   []slotKind{slotNone},
 	},
 	{
+		name: "export", sig: "[path]", desc: "Export the open note's raw markdown to a path outside the vault (opens a popover, prefilled with the note's filename)",
+		example: `:export ~/Documents/`,
+		slots:   []slotKind{slotNone},
+	},
+	{
 		name: "split", sig: "[note]", desc: "Open a new split pane",
 		example: `:split  or  :split docker`,
 		slots:   []slotKind{slotNote},

@@ -87,6 +87,9 @@ type Model struct {
 	showImport bool
 	importView importPane
 
+	showExport bool
+	exportView exportPane
+
 	titleSet map[string]bool // lowercase note titles → used for link existence checks
 
 	// searchResults is non-nil exactly when m.noteList currently displays a
@@ -462,6 +465,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.importView.confirmed {
 				m.runImport()
 				if !m.showImport {
+					m.resizeOpenEditors(m.computeLayout())
+				}
+			}
+			return m, nil
+		}
+
+		// Export overlay captures all input.
+		if m.showExport {
+			m.exportView = m.exportView.update(msg)
+			if m.exportView.cancelled {
+				m.showExport = false
+				return m, nil
+			}
+			if m.exportView.confirmed {
+				m.runExport()
+				if !m.showExport {
 					m.resizeOpenEditors(m.computeLayout())
 				}
 			}
@@ -1236,6 +1255,17 @@ func (m Model) View() string {
 			Width(importInner).
 			Height(l.contentHeight).
 			Render(m.importView.render(importInner, l.contentHeight))
+	} else if m.showExport {
+		exportInner := l.mainWidth - 2
+		if exportInner < 1 {
+			exportInner = 1
+		}
+		main = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(activeTheme.BorderFocus).
+			Width(exportInner).
+			Height(l.contentHeight).
+			Render(m.exportView.render(exportInner, l.contentHeight))
 	} else {
 		main = m.renderSplits(l)
 	}
@@ -1459,6 +1489,12 @@ func (m Model) renderTooltipBar() string {
 	// Import overlay: show import-specific hints.
 	if m.showImport {
 		bar := strings.Join([]string{chip("Tab", "next field"), chip("Space", "toggle mode"), chip("Enter", "confirm/complete"), chip("Esc", "cancel")}, " ")
+		return fitTooltipBar(bar, m.width)
+	}
+
+	// Export overlay: show export-specific hints.
+	if m.showExport {
+		bar := strings.Join([]string{chip("Tab", "next field"), chip("Enter", "confirm/complete"), chip("Esc", "cancel")}, " ")
 		return fitTooltipBar(bar, m.width)
 	}
 

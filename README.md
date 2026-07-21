@@ -263,6 +263,21 @@ Opened with `I` or `:import [path]`. Imports an external markdown file into the 
 
 On success the popover closes and the imported note opens in the active pane. On failure (e.g. bad path) an error shows inside the popover and it stays open so you can correct it.
 
+### Export Popover
+
+Opened with `:export [path]`. Writes the currently open note's raw markdown (frontmatter included, byte-identical to the vault file — round-trips back in via `:import`) to a path outside the vault. Always a copy: the vault note is never modified, moved, or removed.
+
+| Key | Action |
+|---|---|
+| `Tab` / `Shift+Tab` | Move between Path → Export |
+| (Path field) prefill | Defaults to the open note's own `<ID> <Title>.md` filename — `Enter` alone exports to the current working directory under that name |
+| (Path field) typing | Live directory-listing suggestions, same as Import |
+| (Path field) `Enter` | Accept the highlighted suggestion |
+| (Export field) `Enter` | Run the export — if the target already exists, one more `Enter` confirms the overwrite |
+| `Esc` | Cancel — nothing on disk changes |
+
+A bare directory path (e.g. `~/Documents/`) exports into it under the note's own filename. A nonexistent target directory is reported as an error rather than created implicitly. `:export` with no note open shows an error instead of opening an empty prompt.
+
 ### Pane Picker
 
 Opened with the **Pane picker** key (`Ctrl+P` by default).
@@ -314,6 +329,7 @@ The verb list reorders a little depending on where you opened it from — e.g. o
 | `:archive <note>` | Shortcut for `:move <note> → archive` | `A` |
 | `:delete <note>` | Permanently delete a note (`Ctrl+Z` undoes it — see note below) | `D` |
 | `:import [path]` | Open the import popover (path pre-filled if given) — see note below | `I` (opens directly, no palette) |
+| `:export [path]` | Open the export popover, prefilled with the open note's filename — see note below | — |
 | `:tasks` | Show every task in the vault, grouped by project then file | — |
 | `:split [note]` | Open a new side-by-side pane, optionally pre-loaded | — |
 | `:close` | Close the focused pane (blocked if it's the last one) | — |
@@ -335,6 +351,8 @@ The verb list reorders a little depending on where you opened it from — e.g. o
 **`:delete` is permanent** (the file is removed from disk) but safety-netted: it's pushed onto the same undo stack as edits, so `Ctrl+Z` immediately after recreates the file. There's no confirmation prompt, so double-check the note name in the palette before pressing Enter.
 
 **`:import`** reads an external `.md` file and adds it as a new note — see [Import Popover](#import-popover) for the full field-by-field walkthrough. Default is **Move** (the source file is deleted after a successful import); toggle to **Copy** with `Space` on the Mode field to leave the source in place.
+
+**`:export`** writes the open note's raw markdown to a path outside the vault — see [Export Popover](#export-popover). Always a copy; the vault note is never touched.
 
 **Valid states for `:move`:** `inbox` · `projects` · `areas` · `research` · `archive`
 

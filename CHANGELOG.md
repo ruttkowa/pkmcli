@@ -187,6 +187,18 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   rewrites existing rc content, and prints the line instead of guessing
   for any other shell. Aborts with a non-zero exit and installs nothing
   if the build fails. Issue #16.
+- `:export [path]` command + popover, modeled on `:import` (reuses
+  `pathSuggestions`' directory-listing autocomplete): writes the open
+  note's raw markdown — frontmatter included, byte-identical to the
+  vault file, so it round-trips back in via `:import` — to a path
+  outside the vault. Always a copy; the vault note is never modified,
+  moved, or reindexed. Path field prefills with the note's own
+  `<ID> <Title>.md` filename. A bare directory path exports under that
+  filename; a nonexistent target directory errors instead of being
+  created implicitly; an existing target requires one extra `Enter` to
+  confirm the overwrite; no note open shows an error instead of an empty
+  prompt. Issue #23. `internal/tui/export_pane.go`,
+  `internal/tui/commands.go` (`cmdExport`, `runExport`).
 
 ### Verify
 - `go test ./...` — clean.
@@ -267,6 +279,16 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   touches nothing; build broken (`go` absent from `$PATH`) → non-zero
   exit, nothing installed, no rc file; `git status` stays clean after a
   build (binary ignored, `install.sh` itself is the only new file).
+- `internal/tui/tui_test.go` (#23): `TestHeadlessExportPrefillsCurrentNoteFilename`,
+  `TestHeadlessExportWritesByteIdenticalCopy`,
+  `TestHeadlessExportExistingTargetRequiresConfirm`,
+  `TestHeadlessExportNonexistentDirectoryErrors`,
+  `TestHeadlessExportDirectoryPathExportsUnderNoteFilename`,
+  `TestHeadlessExportNoNoteOpenShowsError`.
+- Manual (tmux): created a note, `:export`, popover showed the prefilled
+  filename; cleared it, typed an out-of-vault target path, confirmed —
+  popover closed, exported file byte-identical to the vault copy, vault
+  copy unchanged.
 
 Remaining backlog tracked as GitHub issues (repo `ruttkowa/pkmcli`):
 soft-delete/trash (#1), text selection + copy/paste (#2), hotkey-bar

@@ -72,6 +72,18 @@ IMPORT POPOVER  —  I or :import [path]
                 on Import: run the import
   Esc           cancel, no changes made
 
+EXPORT POPOVER  —  :export [path]
+  Writes the open note's raw markdown (frontmatter included) to a path
+  outside the vault — always a copy, the vault note is never touched.
+  Path field    prefilled with the note's own filename; type or
+                arrow-select a suggestion (same directory-listing
+                autocomplete as Import)
+  Tab/Shift+Tab move between Path → Export
+  Enter         on Path: accept the highlighted suggestion
+                on Export: run the export (an existing target asks for
+                one more Enter to confirm the overwrite)
+  Esc           cancel, no changes made
+
 TASK OVERVIEW  —  :tasks or the sidebar's Tasks row
   Scans the whole vault for checkbox lines, grouped: each active project
   with task-bearing notes (heading), its notes (sub-heading, sorted by
@@ -101,6 +113,8 @@ COMMAND PALETTE  —  press : or Ctrl+Space to open
   :delete <note>            permanently delete a note (Ctrl+Z to undo)
   :import [path]            open the import popover (path autocomplete,
                             move/copy toggle, destination state)
+  :export [path]            open the export popover (path autocomplete,
+                            prefilled with the open note's filename)
   :tasks                    show every task in the vault, grouped by
                             project then file (also in the sidebar)
   :split [note]             open a new side-by-side pane

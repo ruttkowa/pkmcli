@@ -2472,6 +2472,193 @@ func TestHeadlessImportPopoverEsc(t *testing.T) {
 	}
 }
 
+// openExportPopover opens a note via the note list, then runs :export
+// through the palette, returning the resulting Model.
+func openExportPopover(t *testing.T, m Model) Model {
+	t.Helper()
+	m = step(t, m, key("enter"), "enter (open note)")
+	m = step(t, m, key(":"), "open palette")
+	m = typeInPalette(t, m, "export")
+	m = step(t, m, key("enter"), "submit :export")
+	return m
+}
+
+// TestHeadlessExportPrefillsCurrentNoteFilename guards #23's autosuggest
+// requirement: the path field must default to the open note's own filename
+// (not a filesystem path, unlike :import's autosuggest), so Enter alone
+// exports to the working directory under the note's own name.
+func TestHeadlessExportPrefillsCurrentNoteFilename(t *testing.T) {
+	m := setupTUI(t)
+	m = openExportPopover(t, m)
+	if !m.showExport {
+		t.Fatalf("expected showExport=true after :export, statusMsg=%q", m.statusMsg)
+	}
+	n := m.splits[m.activeSplit].viewer.note
+	want := vault.Filename(n.ID, n.Title)
+	if got := m.exportView.pathInput.Value(); got != want {
+		t.Errorf("path field = %q, want prefilled with %q", got, want)
+	}
+}
+
+// TestHeadlessExportWritesByteIdenticalCopy guards the core behavior: export
+// is a byte-for-byte copy of the note's on-disk file (frontmatter included,
+// so it round-trips via :import), and the vault copy is never touched.
+func TestHeadlessExportWritesByteIdenticalCopy(t *testing.T) {
+	m := setupTUI(t)
+	m = openExportPopover(t, m)
+	n := m.splits[m.activeSplit].viewer.note
+	original, err := os.ReadFile(n.Path)
+	if err != nil {
+		t.Fatalf("read original note file: %v", err)
+	}
+
+	outDir := t.TempDir()
+	outPath := filepath.Join(outDir, "exported.md")
+
+	// Clear the prefilled value and type the target path.
+	for range m.exportView.pathInput.Value() {
+		m = step(t, m, key("backspace"), "backspace")
+	}
+	m = typeString(t, m, outPath)
+	m = step(t, m, key("tab"), "tab (-> confirm)")
+	if m.exportView.focused != expFldConfirm {
+		t.Fatalf("expected focus on expFldConfirm, got %v", m.exportView.focused)
+	}
+	m = step(t, m, key("enter"), "enter (confirm export)")
+
+	if m.showExport {
+		t.Fatalf("expected popover closed after successful export, errMsg=%q", m.exportView.errMsg)
+	}
+	written, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read exported file: %v", err)
+	}
+	if string(written) != string(original) {
+		t.Errorf("exported bytes differ from source:\nexported=%q\nsource=  %q", written, original)
+	}
+	// Vault copy must be byte-identical to what it was before (untouched).
+	afterExport, err := os.ReadFile(n.Path)
+	if err != nil {
+		t.Fatalf("re-read vault note: %v", err)
+	}
+	if string(afterExport) != string(original) {
+		t.Error("vault note was modified by export")
+	}
+}
+
+// TestHeadlessExportExistingTargetRequiresConfirm guards the overwrite-guard
+// trap: a first Enter on an existing target must NOT write, only arm a
+// pending confirmation; a second Enter on the same path then overwrites.
+func TestHeadlessExportExistingTargetRequiresConfirm(t *testing.T) {
+	m := setupTUI(t)
+	m = openExportPopover(t, m)
+
+	outDir := t.TempDir()
+	outPath := filepath.Join(outDir, "exported.md")
+	if err := os.WriteFile(outPath, []byte("pre-existing content"), 0o644); err != nil {
+		t.Fatalf("seed existing target: %v", err)
+	}
+
+	for range m.exportView.pathInput.Value() {
+		m = step(t, m, key("backspace"), "backspace")
+	}
+	m = typeString(t, m, outPath)
+	m = step(t, m, key("tab"), "tab (-> confirm)")
+	m = step(t, m, key("enter"), "enter (first confirm — should only arm overwrite)")
+
+	if !m.showExport {
+		t.Fatal("expected popover to stay open after the first confirm on an existing target")
+	}
+	if m.exportView.errMsg == "" {
+		t.Error("expected an overwrite-warning errMsg after the first confirm")
+	}
+	stillOld, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(stillOld) != "pre-existing content" {
+		t.Fatal("target was overwritten before the second confirm")
+	}
+
+	m = step(t, m, key("enter"), "enter (second confirm — should overwrite)")
+	if m.showExport {
+		t.Fatalf("expected popover closed after the second confirm, errMsg=%q", m.exportView.errMsg)
+	}
+	overwritten, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read target after overwrite: %v", err)
+	}
+	if string(overwritten) == "pre-existing content" {
+		t.Error("expected the target to be overwritten after the second confirm")
+	}
+}
+
+// TestHeadlessExportNonexistentDirectoryErrors guards against a panic and
+// requires a clear error rather than implicitly creating directories.
+func TestHeadlessExportNonexistentDirectoryErrors(t *testing.T) {
+	m := setupTUI(t)
+	m = openExportPopover(t, m)
+
+	missing := filepath.Join(t.TempDir(), "does-not-exist", "out.md")
+	for range m.exportView.pathInput.Value() {
+		m = step(t, m, key("backspace"), "backspace")
+	}
+	m = typeString(t, m, missing)
+	m = step(t, m, key("tab"), "tab (-> confirm)")
+	m = step(t, m, key("enter"), "enter (confirm export)")
+
+	if !m.showExport {
+		t.Fatal("expected popover to stay open when the target directory doesn't exist")
+	}
+	if m.exportView.errMsg == "" {
+		t.Error("expected an error message for a nonexistent directory")
+	}
+	if _, err := os.Stat(missing); err == nil {
+		t.Error("expected no file to be created")
+	}
+}
+
+// TestHeadlessExportDirectoryPathExportsUnderNoteFilename guards the "bare
+// directory as the path" behavior: it exports into that directory under the
+// note's own filename rather than erroring or requiring an explicit name.
+func TestHeadlessExportDirectoryPathExportsUnderNoteFilename(t *testing.T) {
+	m := setupTUI(t)
+	m = openExportPopover(t, m)
+	n := m.splits[m.activeSplit].viewer.note
+
+	outDir := t.TempDir()
+	for range m.exportView.pathInput.Value() {
+		m = step(t, m, key("backspace"), "backspace")
+	}
+	m = typeString(t, m, outDir+string(os.PathSeparator))
+	m = step(t, m, key("tab"), "tab (-> confirm)")
+	m = step(t, m, key("enter"), "enter (confirm export)")
+
+	if m.showExport {
+		t.Fatalf("expected popover closed after successful export, errMsg=%q", m.exportView.errMsg)
+	}
+	wantPath := filepath.Join(outDir, vault.Filename(n.ID, n.Title))
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Errorf("expected file at %s, stat error: %v", wantPath, err)
+	}
+}
+
+// TestHeadlessExportNoNoteOpenShowsError guards against opening an empty
+// prompt (or panicking) when :export is run with no note open.
+func TestHeadlessExportNoNoteOpenShowsError(t *testing.T) {
+	m := setupTUI(t)
+	m = step(t, m, key(":"), "open palette")
+	m = typeInPalette(t, m, "export")
+	m = step(t, m, key("enter"), "submit :export with no note open")
+
+	if m.showExport {
+		t.Error("expected showExport=false when no note is open")
+	}
+	if m.statusMsg == "" {
+		t.Error("expected an error statusMsg when no note is open")
+	}
+}
+
 // --- Config: show/hide Tasks nav and Templates (issue #14) ---
 
 // TestApplyConfigItemTogglesTasksNavVisibility covers the sidebar reacting

@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -67,6 +69,8 @@ func (m *Model) handleCommand(raw string) (string, tea.Cmd) {
 		return m.cmdConfig(args)
 	case "import":
 		return m.cmdImport(args)
+	case "export":
+		return m.cmdExport(args)
 	case "tasks":
 		return m.cmdTasks()
 	case "help":
@@ -417,6 +421,89 @@ func (m *Model) runImport() {
 	l := m.computeLayout()
 	m.splits[m.activeSplit].viewer = m.splits[m.activeSplit].viewer.preRender(l.paneWidth, m.titleSet)
 	m.statusMsg = refreshCounts(m)
+}
+
+// cmdExport opens the :export popover for the currently open note, prefilled
+// with the note's own filename (the actual file write happens in
+// Model.runExport once the user confirms). Unlike :import, export is
+// strictly read-only with respect to the vault: it never modifies, moves,
+// or reindexes anything — the written file is outside the vault's purview
+// even if the destination happens to be inside it.
+func (m *Model) cmdExport(args []string) (string, tea.Cmd) {
+	sp := &m.splits[m.activeSplit]
+	if sp.viewer.note == nil {
+		return "no note open to export", nil
+	}
+	m.showExport = true
+	m.exportView = newExportPane(sp.viewer.note)
+	if len(args) > 0 {
+		path := strings.Join(args, " ")
+		m.exportView.pathInput.SetValue(path)
+		m.exportView.pathInput.CursorEnd()
+		m.exportView.suggestions = pathSuggestions(path)
+	}
+	return "", nil
+}
+
+// runExport writes the currently open note's raw bytes (frontmatter
+// included, byte-identical to the vault copy, so it round-trips back in via
+// :import) to the path in m.exportView once confirmed. A bare directory
+// path exports under the note's own filename. An existing target requires
+// one extra confirm (see exportPane.pendingOverwritePath) before it's
+// overwritten. Closes the popover on success; leaves it open with an error
+// message on failure so the user can correct the path and retry.
+func (m *Model) runExport() {
+	sp := &m.splits[m.activeSplit]
+	n := sp.viewer.note
+	if n == nil {
+		m.exportView.errMsg = "no note open to export"
+		m.exportView.confirmed = false
+		return
+	}
+
+	raw := strings.TrimSpace(m.exportView.pathInput.Value())
+	if raw == "" {
+		m.exportView.errMsg = "enter a file path"
+		m.exportView.confirmed = false
+		return
+	}
+	target := expandExportPath(raw)
+
+	filename := vault.Filename(n.ID, n.Title)
+	if strings.HasSuffix(target, string(os.PathSeparator)) {
+		target = filepath.Join(target, filename)
+	} else if info, err := os.Stat(target); err == nil && info.IsDir() {
+		target = filepath.Join(target, filename)
+	}
+
+	dir := filepath.Dir(target)
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		m.exportView.errMsg = "directory does not exist: " + dir
+		m.exportView.confirmed = false
+		return
+	}
+
+	if _, err := os.Stat(target); err == nil && m.exportView.pendingOverwritePath != target {
+		m.exportView.pendingOverwritePath = target
+		m.exportView.errMsg = "file exists — press Enter again to overwrite"
+		m.exportView.confirmed = false
+		return
+	}
+
+	data, err := os.ReadFile(n.Path)
+	if err != nil {
+		m.exportView.errMsg = "export error: " + err.Error()
+		m.exportView.confirmed = false
+		return
+	}
+	if err := os.WriteFile(target, data, 0o644); err != nil {
+		m.exportView.errMsg = "export error: " + err.Error()
+		m.exportView.confirmed = false
+		return
+	}
+
+	m.showExport = false
+	m.statusMsg = "exported: " + target
 }
 
 func (m *Model) cmdConfigExport(args []string) (string, tea.Cmd) {
