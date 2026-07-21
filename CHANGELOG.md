@@ -151,6 +151,13 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   boundary (never by indentation, which glamour also uses for nested list
   items). Issue #17. `internal/tui/viewer.go`
   (`processCheckboxesAndCode`).
+- Editor: `Backspace` on an auto-paired `()`, `[]`, or `` `` `` with the
+  cursor directly between the two (nothing typed in between) now deletes
+  both halves instead of leaving the closer orphaned — previously
+  deleting `(` from `(|)` left `)` behind, and the next `(` produced
+  `())`. `Backspace` with any content between the pair still deletes a
+  single character as before. Issue #21. `internal/tui/editor.go`
+  (`updateBody`'s new `"backspace"` case, `charBeforeCursor`).
 
 ### Verify
 - `go test ./...` — clean.
@@ -202,6 +209,15 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   sequences, all 3 lines carried the identical dim color code
   (`38;2;76;86;105`), while a following unfinished task kept a different,
   undimmed color — confirming the fix live, not just at the unit level.
+- `TestHeadlessBackspaceDeletesEmptyAutoPair`,
+  `TestHeadlessBackspaceOnNonEmptyPairDeletesOnlyContent`,
+  `TestHeadlessBackspaceThenReopenNoDoubleClose`,
+  `TestHeadlessBackspaceClosingBracketPairDismissesLinkSuggest` (#21),
+  covering all three pair types plus the reported regression and the
+  link-autosuggest interaction.
+- Manual (tmux): typed `(` → `()`; `Backspace` → empty; typed `(` again →
+  `()`, not `())` — reproduced then confirmed the fix for the exact
+  reported regression.
 
 Remaining backlog tracked as GitHub issues (repo `ruttkowa/pkmcli`):
 soft-delete/trash (#1), text selection + copy/paste (#2), hotkey-bar

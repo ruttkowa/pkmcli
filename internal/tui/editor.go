@@ -458,6 +458,24 @@ func (e editPane) updateBody(km tea.KeyMsg) (editPane, tea.Cmd) {
 		e = e.handleEnter()
 		e.wordCount = countWords(e.ta.Value())
 		return e, nil
+
+	case "backspace":
+		// #21: the two halves of an auto-paired ( ), [ ], or `` are inserted
+		// together but bubbles/textarea's own backspace only ever deletes one
+		// rune, leaving an orphaned closer behind (and, on the next opener
+		// keystroke, a stray extra pair). If the cursor sits exactly between
+		// a matching pair with nothing in between, delete both; otherwise a
+		// normal single-rune backspace.
+		var cmd tea.Cmd
+		if want, ok := autoPairs[charBeforeCursor(e.ta)]; ok && after == want {
+			e.ta, _ = e.ta.Update(tea.KeyMsg{Type: tea.KeyDelete})
+			e.ta, cmd = e.ta.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		} else {
+			e.ta, cmd = e.ta.Update(km)
+		}
+		e.wordCount = countWords(e.ta.Value())
+		e = e.refreshLinkSuggest()
+		return e, cmd
 	}
 
 	var cmd tea.Cmd
@@ -466,6 +484,11 @@ func (e editPane) updateBody(km tea.KeyMsg) (editPane, tea.Cmd) {
 	e = e.refreshLinkSuggest()
 	return e, cmd
 }
+
+// autoPairs maps each auto-closed opener to its closer — the same set
+// updateBody auto-closes on ("(", "[", "`") — used by the backspace handler
+// above to detect an empty pair.
+var autoPairs = map[rune]rune{'(': ')', '[': ']', '`': '`'}
 
 // detectLinkFragment returns the typed fragment inside an active [[...]] at the cursor.
 func (e editPane) detectLinkFragment() (string, bool) {
@@ -822,6 +845,17 @@ func textBeforeCursor(ta textarea.Model) string {
 		col = len(runes)
 	}
 	return string(runes[:col])
+}
+
+// charBeforeCursor returns the rune immediately before the cursor on the
+// current line, or 0 if the cursor is at the start of the line. Derived from
+// textBeforeCursor rather than a second line/column traversal.
+func charBeforeCursor(ta textarea.Model) rune {
+	before := []rune(textBeforeCursor(ta))
+	if len(before) == 0 {
+		return 0
+	}
+	return before[len(before)-1]
 }
 
 func countWords(s string) int {

@@ -2003,6 +2003,95 @@ func TestHeadlessEscOnCleanEditorIsNoop(t *testing.T) {
 	}
 }
 
+// TestHeadlessBackspaceDeletesEmptyAutoPair guards #21: bubbles/textarea's
+// backspace deletes exactly one rune, so an auto-closed empty pair like
+// "(|)" left an orphaned closer behind. Backspace must now delete both
+// halves when the cursor sits directly between a matching pair.
+func TestHeadlessBackspaceDeletesEmptyAutoPair(t *testing.T) {
+	for _, open := range []rune{'(', '[', '`'} {
+		t.Run(string(open), func(t *testing.T) {
+			m := setupTUI(t)
+			m = step(t, m, key("enter"), "open note")
+			m = step(t, m, key("e"), "open editor")
+
+			m = typeString(t, m, string(open))
+			body := m.splits[m.activeSplit].editor.ta.Value()
+			want := string(open) + string(autoPairs[open])
+			if body != want {
+				t.Fatalf("after typing %q, body = %q, want %q", string(open), body, want)
+			}
+
+			m = step(t, m, key("backspace"), "backspace")
+			body = m.splits[m.activeSplit].editor.ta.Value()
+			if body != "" {
+				t.Errorf("after backspace on empty pair, body = %q, want empty", body)
+			}
+		})
+	}
+}
+
+// TestHeadlessBackspaceOnNonEmptyPairDeletesOnlyContent guards the "only
+// delete the pair when adjacent" trap in #21: "(x|)" + backspace must delete
+// just "x", leaving the pair intact — not scan past content to find a closer.
+func TestHeadlessBackspaceOnNonEmptyPairDeletesOnlyContent(t *testing.T) {
+	for _, open := range []rune{'(', '[', '`'} {
+		t.Run(string(open), func(t *testing.T) {
+			m := setupTUI(t)
+			m = step(t, m, key("enter"), "open note")
+			m = step(t, m, key("e"), "open editor")
+
+			m = typeString(t, m, string(open))
+			m = typeString(t, m, "x")
+			m = step(t, m, key("backspace"), "backspace")
+
+			body := m.splits[m.activeSplit].editor.ta.Value()
+			want := string(open) + string(autoPairs[open])
+			if body != want {
+				t.Errorf("body = %q, want %q (only the content deleted, pair intact)", body, want)
+			}
+		})
+	}
+}
+
+// TestHeadlessBackspaceThenReopenNoDoubleClose is the exact regression
+// reported in #21: typing "(", backspace, typing "(" again must produce
+// "()", not "())" — a stale orphaned closer from before the fix would
+// combine with the fresh autoclose to leave an extra ")".
+func TestHeadlessBackspaceThenReopenNoDoubleClose(t *testing.T) {
+	m := setupTUI(t)
+	m = step(t, m, key("enter"), "open note")
+	m = step(t, m, key("e"), "open editor")
+
+	m = typeString(t, m, "(")
+	m = step(t, m, key("backspace"), "backspace")
+	m = typeString(t, m, "(")
+
+	body := m.splits[m.activeSplit].editor.ta.Value()
+	if body != "()" {
+		t.Errorf("body = %q, want %q", body, "()")
+	}
+}
+
+// TestHeadlessBackspaceClosingBracketPairDismissesLinkSuggest guards the
+// link-autosuggest interaction from #21: deleting a "[" via the new
+// pair-backspace must refresh (and here, close) the link suggestion
+// dropdown, not leave it stale.
+func TestHeadlessBackspaceClosingBracketPairDismissesLinkSuggest(t *testing.T) {
+	m := setupTUI(t)
+	m = step(t, m, key("enter"), "open note")
+	m = step(t, m, key("e"), "open editor")
+
+	m = typeString(t, m, "[[")
+	if !m.splits[m.activeSplit].editor.linkSuggestActive {
+		t.Fatal("expected link suggest active after typing [[")
+	}
+
+	m = step(t, m, key("backspace"), "backspace")
+	if m.splits[m.activeSplit].editor.linkSuggestActive {
+		t.Error("expected link suggest inactive after backspace closed the outer [ pair")
+	}
+}
+
 // TestHeadlessEditorAssignsProject guards issue #25: assigning a project via
 // the editor's Project field must do everything :add project (cmdProject)
 // does — force State to StateProjects, record attach history, and reveal the
