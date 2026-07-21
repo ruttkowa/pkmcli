@@ -178,6 +178,16 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   isn't clipped to the layout's content height at all. Not a mouse-click
   issue and not touched here.
 
+### Added (issue batch, 2026-07-21)
+- `install.sh` — builds `pkm` and installs it to a directory on `PATH`
+  (default `~/.local/bin`, overridable via `PREFIX=` or a positional
+  arg). If the install directory isn't already on `$PATH`, appends an
+  `export PATH=...` line to the shell rc file chosen from `$SHELL`
+  (`.zshrc`/`.bashrc`); idempotent (checks before appending), never
+  rewrites existing rc content, and prints the line instead of guessing
+  for any other shell. Aborts with a non-zero exit and installs nothing
+  if the build fails. Issue #16.
+
 ### Verify
 - `go test ./...` — clean.
 - `internal/vault/vault_test.go`: `TestImportMovesFileByDefault`,
@@ -249,6 +259,14 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   is back; sent a raw SGR mouse-click escape sequence at the exact
   row/column the sidebar layout math expects for the Inbox glyph, and it
   correctly toggled Inbox's expand state with no offset.
+- Manual, `install.sh` (#16): fresh install with the target dir off
+  `$PATH` (binary lands, correct rc file gets exactly one export line,
+  both for `zsh` and `bash`); run twice → rc file byte-identical; target
+  dir already on `$PATH` → no rc modification; positional custom install
+  dir → binary lands there; unrecognized `$SHELL` → prints the line,
+  touches nothing; build broken (`go` absent from `$PATH`) → non-zero
+  exit, nothing installed, no rc file; `git status` stays clean after a
+  build (binary ignored, `install.sh` itself is the only new file).
 
 Remaining backlog tracked as GitHub issues (repo `ruttkowa/pkmcli`):
 soft-delete/trash (#1), text selection + copy/paste (#2), hotkey-bar

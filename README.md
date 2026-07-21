@@ -29,6 +29,15 @@ A terminal-based Personal Knowledge Management tool — navigate, organize, and 
 ## Quick start
 
 ```sh
+./install.sh
+pkm [path/to/vault]
+```
+
+`install.sh` builds the binary and installs it to `~/.local/bin` (override with `PREFIX=/some/dir ./install.sh` or `./install.sh /some/dir`), adding it to your shell's `PATH` if it isn't already there. Run `./install.sh --help` for details.
+
+Without the install script:
+
+```sh
 go build -o pkm ./cmd/pkm
 ./pkm [path/to/vault]
 ```
