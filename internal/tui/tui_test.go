@@ -1886,6 +1886,198 @@ func TestHeadlessEscOnCleanEditorIsNoop(t *testing.T) {
 	}
 }
 
+// TestHeadlessEditorAssignsProject guards issue #25: assigning a project via
+// the editor's Project field must do everything :add project (cmdProject)
+// does — force State to StateProjects, record attach history, and reveal the
+// note in the sidebar's project tree — not just write the Project string.
+func TestHeadlessEditorAssignsProject(t *testing.T) {
+	m := setupTUI(t)
+	if _, err := m.vault.Projects.Create("Homelab"); err != nil {
+		t.Fatalf("Projects.Create: %v", err)
+	}
+
+	m = step(t, m, key("enter"), "enter (open note)")
+	n := m.splits[m.activeSplit].viewer.note
+	if n.State == vault.StateProjects {
+		t.Fatal("test setup: note should not start in StateProjects")
+	}
+
+	m = step(t, m, key("e"), "e (open editor)")
+	m = step(t, m, key("shift+tab"), "shift+tab (body → project field)")
+	if m.splits[m.activeSplit].editor.focused != fldProject {
+		t.Fatalf("expected focus on fldProject, got %v", m.splits[m.activeSplit].editor.focused)
+	}
+	m = typeString(t, m, "Homelab")
+	m = step(t, m, tea.KeyMsg{Type: tea.KeyCtrlS}, "ctrl+s (save)")
+
+	saved, err := m.vault.FindByTitle(n.Title)
+	if err != nil {
+		t.Fatalf("FindByTitle: %v", err)
+	}
+	if saved.State != vault.StateProjects {
+		t.Errorf("State = %q, want %q", saved.State, vault.StateProjects)
+	}
+	if saved.Project != "Homelab" {
+		t.Errorf("Project = %q, want %q", saved.Project, "Homelab")
+	}
+
+	p, ok := m.vault.Projects.Get("Homelab")
+	if !ok {
+		t.Fatal("expected Homelab project to exist")
+	}
+	found := false
+	for _, h := range p.History {
+		if h.Kind == vault.HistoryKindAttached && h.NoteID == saved.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected an attached history entry for the note")
+	}
+
+	if !m.sidebar.expanded[vault.StateProjects] {
+		t.Error("expected Projects section expanded to reveal the note")
+	}
+	if !m.sidebar.expandedProjects["Homelab"] {
+		t.Error("expected Homelab project folder expanded to reveal the note")
+	}
+	revealed := false
+	for _, item := range m.sidebar.items() {
+		if item.isProjectNote && item.note != nil && item.note.ID == saved.ID {
+			revealed = true
+		}
+	}
+	if !revealed {
+		t.Error("expected the note to appear among Homelab's revealed sidebar items")
+	}
+}
+
+// TestHeadlessEditorClearsProject guards the detach side of #25: clearing the
+// Project field on a project note in the editor must record a detach and
+// return the note to Inbox, not leave it orphaned in StateProjects with an
+// empty Project.
+func TestHeadlessEditorClearsProject(t *testing.T) {
+	m := setupTUI(t)
+	if _, err := m.vault.Projects.Create("Homelab"); err != nil {
+		t.Fatalf("Projects.Create: %v", err)
+	}
+	n, err := m.vault.Create("Router notes")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	n.Project = "Homelab"
+	if err := m.vault.SetState(n, vault.StateProjects); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+
+	sp := &m.splits[m.activeSplit]
+	sp.viewer = sp.viewer.withNote(n)
+	sp.activeView = viewNote
+	m.activePane = paneMain
+
+	m = step(t, m, key("e"), "e (open editor)")
+	m = step(t, m, key("shift+tab"), "shift+tab (body → project field)")
+	// Clear the pre-filled "Homelab" value.
+	for range "Homelab" {
+		m = step(t, m, key("backspace"), "backspace")
+	}
+	m = step(t, m, tea.KeyMsg{Type: tea.KeyCtrlS}, "ctrl+s (save)")
+
+	saved, err := m.vault.FindByTitle("Router notes")
+	if err != nil {
+		t.Fatalf("FindByTitle: %v", err)
+	}
+	if saved.Project != "" {
+		t.Errorf("Project = %q, want empty", saved.Project)
+	}
+	if saved.State != vault.StateInbox {
+		t.Errorf("State = %q, want %q", saved.State, vault.StateInbox)
+	}
+
+	p, _ := m.vault.Projects.Get("Homelab")
+	found := false
+	for _, h := range p.History {
+		if h.Kind == vault.HistoryKindDetached && h.NoteID == saved.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected a detached history entry for the note")
+	}
+}
+
+// TestHeadlessEditorProjectAssignmentAtMaxLeavesDraftIntact guards the
+// max-active-projects trap from #25's spec: EnsureProject is validated
+// before anything is mutated, so a max-reached error must leave the editor
+// open with the draft untouched rather than silently losing it.
+func TestHeadlessEditorProjectAssignmentAtMaxLeavesDraftIntact(t *testing.T) {
+	m := setupTUI(t)
+	for i := 0; i < vault.MaxProjects; i++ {
+		if _, err := m.vault.Projects.Create(string(rune('A' + i))); err != nil {
+			t.Fatalf("Projects.Create: %v", err)
+		}
+	}
+
+	m = step(t, m, key("enter"), "enter (open note)")
+	n := m.splits[m.activeSplit].viewer.note
+	origState := n.State
+
+	m = step(t, m, key("e"), "e (open editor)")
+	m = typeString(t, m, " extra text")
+	m = step(t, m, key("shift+tab"), "shift+tab (body → project field)")
+	m = typeString(t, m, "BrandNewProject")
+	m = step(t, m, tea.KeyMsg{Type: tea.KeyCtrlS}, "ctrl+s (save)")
+
+	sp := m.splits[m.activeSplit]
+	if sp.activeView != viewEdit {
+		t.Fatal("expected editor to stay open after a max-projects error")
+	}
+	if m.statusMsg == "" {
+		t.Error("expected an error statusMsg")
+	}
+
+	onDisk, err := m.vault.FindByTitle(n.Title)
+	if err != nil {
+		t.Fatalf("FindByTitle: %v", err)
+	}
+	if strings.Contains(onDisk.Body, "extra text") {
+		t.Error("expected the draft NOT to be saved to disk after a max-projects error")
+	}
+	if onDisk.State != origState {
+		t.Errorf("State = %q, want unchanged %q", onDisk.State, origState)
+	}
+}
+
+// TestEditorProjectSuggestPrefixMatch guards the Project field's autosuggest,
+// which mirrors the palette's slotProject convention: case-insensitive
+// PREFIX match only (not substring) over active project names.
+func TestEditorProjectSuggestPrefixMatch(t *testing.T) {
+	e := editPane{projectNames: []string{"Homelab", "Home Renovation", "Work Stuff"}}
+
+	got := e.filterProjects("home")
+	want := []string{"Homelab", "Home Renovation"}
+	if len(got) != len(want) {
+		t.Fatalf("filterProjects(%q) = %v, want %v", "home", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("filterProjects(%q)[%d] = %q, want %q", "home", i, got[i], want[i])
+		}
+	}
+
+	// "stuff" is a substring of "Work Stuff" but not a prefix — must NOT match.
+	if got := e.filterProjects("stuff"); len(got) != 0 {
+		t.Errorf("filterProjects(%q) = %v, want no matches (prefix-only)", "stuff", got)
+	}
+
+	// Empty fragment lists everything, capped at linkSuggestMax.
+	if got := e.filterProjects(""); len(got) != linkSuggestMax {
+		t.Errorf("filterProjects(\"\") returned %d entries, want %d (capped)", len(got), linkSuggestMax)
+	}
+}
+
 // TestHeadlessMouseWheelScrollsViewer exercises the wheel-over-viewer path in
 // handleMouseWheel end-to-end via Update, guarding the pane-index math shared
 // with handleMouseClick (never exercised live since tmux can't send wheel

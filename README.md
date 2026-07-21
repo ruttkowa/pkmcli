@@ -192,6 +192,8 @@ Typing inside an unclosed `[[fragment]]` opens a link-autosuggest dropdown:
 | `Tab` / `Enter` | Accept the highlighted suggestion |
 | `Esc` | Dismiss suggestions only — the editor itself stays open |
 
+The **Project** field autosuggests from active projects the same way (case-insensitive prefix match, same `↑`/`↓`/`Tab`/`Enter`/`Esc` keys). Saving with a project name typed in creates the project if it's new (subject to the max-4-active-projects limit), forces the note into `projects` state, and reveals it in the sidebar's project tree — the same thing `:add project`/`P` does. Clearing the field and saving detaches the note and returns it to Inbox.
+
 The footer row shows word/line counts plus `Last saved: HH:MM:SS`; while the draft differs from the saved note (body, tags, project, or state), an `● Unsaved changes` marker appears next to it. This footer — not the global hotkey bar — is where save state lives.
 
 ### Project Detail

@@ -599,13 +599,26 @@ func (m *Model) cmdProject(args []string) (string, tea.Cmd) {
 		n = sp.viewer.note
 	}
 
-	// Ensure the project exists (creates it if new, errors if max reached).
-	if _, err := m.vault.Projects.EnsureProject(projectName); err != nil {
+	if err := m.assignProjectToNote(n, projectName); err != nil {
 		return fmt.Sprintf("error: %v", err), nil
+	}
+	return refreshCounts(m), nil
+}
+
+// assignProjectToNote attaches n to the named project: ensures the project
+// exists (creating it if new, erroring if the max-active-projects limit is
+// reached), records attach/detach history, forces the note into
+// vault.StateProjects, persists it, updates the index, and reveals the note
+// in the sidebar's project tree. Shared by cmdProject (:add project /
+// Shift+P) and the editor's Project field (commitEditorDraft) so both paths
+// behave identically.
+func (m *Model) assignProjectToNote(n *vault.Note, projectName string) error {
+	if _, err := m.vault.Projects.EnsureProject(projectName); err != nil {
+		return err
 	}
 
 	// Detach from previous project if switching.
-	if n.State == vault.StateProjects && n.Project != "" && n.Project != projectName {
+	if n.Project != "" && n.Project != projectName {
 		m.recordDetach(n)
 	}
 
@@ -614,17 +627,31 @@ func (m *Model) cmdProject(args []string) (string, tea.Cmd) {
 	// Always move to projects state when assigning a project.
 	if n.State != vault.StateProjects {
 		if err := m.vault.SetState(n, vault.StateProjects); err != nil {
-			return fmt.Sprintf("error: %v", err), nil
+			return err
 		}
-	} else {
-		if err := m.vault.Save(n); err != nil {
-			return fmt.Sprintf("error saving: %v", err), nil
-		}
+	} else if err := m.vault.Save(n); err != nil {
+		return err
 	}
 
 	m.recordAttach(n)
 	m.index.Upsert(n)
-	return refreshCounts(m), nil
+	m.revealNoteInProjectSidebar(projectName, n)
+	return nil
+}
+
+// revealNoteInProjectSidebar expands the Projects section and the named
+// project's folder so a just-assigned note is visible in the sidebar tree,
+// and moves the sidebar cursor onto it.
+func (m *Model) revealNoteInProjectSidebar(projectName string, n *vault.Note) {
+	m.sidebar.expanded[vault.StateProjects] = true
+	m.sidebar.expandedProjects[projectName] = true
+	m.sidebar = m.sidebar.refreshNotes()
+	for i, item := range m.sidebar.items() {
+		if item.isProjectNote && item.note != nil && item.note.ID == n.ID {
+			m.sidebar.cursor = i
+			break
+		}
+	}
 }
 
 func (m *Model) recordAttach(n *vault.Note) {

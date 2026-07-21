@@ -123,6 +123,27 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   in-memory title set, so links pointing at the undone note render as
   working links again instead of staying marked broken.
 
+### Fixed (issue batch, 2026-07-21)
+- Editor: assigning a project via the Project field now does everything
+  `:add project`/Shift+P already did — creates the project if new
+  (respecting the max-4-active-projects limit), forces the note into
+  `projects` state, records attach/detach history, and reveals the note
+  in the sidebar's expanded project folder. Previously `commitEditorDraft`
+  only wrote the `Project` string, so an edited note pointed at a project
+  it never actually joined and stayed invisible in the nav tree. Clearing
+  the field now records a detach and returns the note to Inbox instead of
+  leaving it orphaned in `projects` state with no project. A max-projects
+  error now leaves the draft and on-disk note untouched with the editor
+  still open, instead of silently discarding the edit. Issue #25.
+  `internal/tui/model.go` (`commitEditorDraft`), `internal/tui/commands.go`
+  (`assignProjectToNote`, factored out of `cmdProject` and shared by both
+  paths).
+- Editor: the Project field now autosuggests from active projects
+  (case-insensitive prefix match, same convention as the palette's
+  `:add project` argument), rendered as a dropdown under the field;
+  `Tab`/`Enter` accepts, `Esc` dismisses the list without leaving the
+  field. Issue #25. `internal/tui/editor.go`.
+
 ### Verify
 - `go test ./...` — clean.
 - `internal/vault/vault_test.go`: `TestImportMovesFileByDefault`,
@@ -153,8 +174,17 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   wrapping and breaking the border, reproducing then confirming the fix
   for the narrow-pane bug above.
 
-Remaining backlog tracked in `todo.md` (import command, soft-delete/trash,
-text selection + copy/paste, hotkey-bar grouping).
+- `TestHeadlessEditorAssignsProject`, `TestHeadlessEditorClearsProject`,
+  `TestHeadlessEditorProjectAssignmentAtMaxLeavesDraftIntact`,
+  `TestEditorProjectSuggestPrefixMatch` (#25).
+- Manual (tmux): opened a note, Shift+Tab into the Project field, typed a
+  prefix — dropdown appeared under the field; `Tab` accepted "Homelab";
+  `Ctrl+S` → note showed `State: projects · Project: Homelab`, sidebar
+  auto-expanded Projects → Homelab with the note visible inside.
+
+Remaining backlog tracked as GitHub issues (repo `ruttkowa/pkmcli`):
+soft-delete/trash (#1), text selection + copy/paste (#2), hotkey-bar
+grouping (#3), line-wise editor operations (#10).
 
 ## [0.1.0] - 2026-07-08
 

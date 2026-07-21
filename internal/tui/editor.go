@@ -50,6 +50,7 @@ type editPane struct {
 	cancelled bool
 
 	notes         []*vault.Note // for link autocomplete
+	projectNames  []string      // active project names, for the Project field autosuggest
 	contentHeight int
 	saveKey       string // configured key that commits the draft (default "ctrl+s")
 	// link suggestion state
@@ -57,9 +58,13 @@ type editPane struct {
 	linkSuggestFrag   string
 	linkSuggestSel    int
 	linkSuggestList   []string
+	// project field suggestion state
+	projSuggestActive bool
+	projSuggestSel    int
+	projSuggestList   []string
 }
 
-func newEditPane(n *vault.Note, width, height int, notes []*vault.Note, lineNumbers bool, saveKey string) (editPane, tea.Cmd) {
+func newEditPane(n *vault.Note, width, height int, notes []*vault.Note, projectNames []string, lineNumbers bool, saveKey string) (editPane, tea.Cmd) {
 	si := 0
 	for i, s := range vault.AllStates {
 		if s == n.State {
@@ -107,6 +112,7 @@ func newEditPane(n *vault.Note, width, height int, notes []*vault.Note, lineNumb
 		focused:       fldBody,
 		wordCount:     countWords(n.Body),
 		notes:         notes,
+		projectNames:  projectNames,
 		contentHeight: height,
 		saveKey:       saveKey,
 	}, focusCmd
@@ -196,9 +202,16 @@ func (e editPane) bodyHeight() int {
 			n = linkSuggestMax
 		}
 		h -= n
-		if h < 1 {
-			h = 1
+	}
+	if e.projSuggestActive {
+		n := len(e.projSuggestList)
+		if n > linkSuggestMax {
+			n = linkSuggestMax
 		}
+		h -= n
+	}
+	if h < 1 {
+		h = 1
 	}
 	return h
 }
@@ -306,6 +319,31 @@ func (e editPane) update(msg tea.Msg) (editPane, tea.Cmd) {
 			}
 		}
 
+		// Project suggestion dropdown intercepts keys before the global
+		// switch, same pattern as the link suggestion block above.
+		if e.projSuggestActive && e.focused == fldProject {
+			switch km.String() {
+			case "tab", "enter":
+				return e.completeProjectSuggestion()
+			case "up", "ctrl+p":
+				if n := len(e.projSuggestList); n > 0 {
+					e.projSuggestSel = (e.projSuggestSel - 1 + n) % n
+				}
+				return e, nil
+			case "down", "ctrl+n":
+				if n := len(e.projSuggestList); n > 0 {
+					e.projSuggestSel = (e.projSuggestSel + 1) % n
+				}
+				return e, nil
+			case "esc":
+				// Dismiss suggestions without cancelling the editor.
+				e.projSuggestActive = false
+				e.projSuggestList = nil
+				e.ta.SetHeight(calcBodyHeight(e.contentHeight))
+				return e, nil
+			}
+		}
+
 		switch km.String() {
 		case e.saveKey:
 			e.saved = true
@@ -329,6 +367,7 @@ func (e editPane) update(msg tea.Msg) (editPane, tea.Cmd) {
 		case fldProject:
 			var cmd tea.Cmd
 			e.projInput, cmd = e.projInput.Update(km)
+			e = e.refreshProjectSuggest()
 			return e, cmd
 		case fldBody:
 			return e.updateBody(km)
@@ -585,6 +624,9 @@ func (e editPane) cycleField(dir int) (editPane, tea.Cmd) {
 		e.tagsInput.Blur()
 	case fldProject:
 		e.projInput.Blur()
+		e.projSuggestActive = false
+		e.projSuggestList = nil
+		e.ta.SetHeight(calcBodyHeight(e.contentHeight))
 	case fldBody:
 		e.ta.Blur()
 	}
@@ -597,12 +639,72 @@ func (e editPane) cycleField(dir int) (editPane, tea.Cmd) {
 		return e, cmd
 	case fldProject:
 		cmd := e.projInput.Focus()
+		e = e.refreshProjectSuggest()
 		return e, cmd
 	case fldBody:
 		cmd := e.ta.Focus()
 		return e, cmd
 	}
 	return e, nil // fldState has no focus command
+}
+
+// refreshProjectSuggest recomputes the Project field's suggestion dropdown
+// from the current input value, mirroring the palette's slotProject
+// autosuggest (case-insensitive prefix match over active project names).
+func (e editPane) refreshProjectSuggest() editPane {
+	prevLen := len(e.projSuggestList)
+	if prevLen > linkSuggestMax {
+		prevLen = linkSuggestMax
+	}
+
+	e.projSuggestList = e.filterProjects(strings.TrimSpace(e.projInput.Value()))
+	e.projSuggestActive = len(e.projSuggestList) > 0
+	if e.projSuggestSel >= len(e.projSuggestList) {
+		e.projSuggestSel = 0
+	}
+
+	newLen := len(e.projSuggestList)
+	if newLen > linkSuggestMax {
+		newLen = linkSuggestMax
+	}
+	if newLen != prevLen {
+		e.ta.SetHeight(e.bodyHeight())
+	}
+	return e
+}
+
+func (e editPane) filterProjects(fragment string) []string {
+	fl := strings.ToLower(fragment)
+	var out []string
+	for _, name := range e.projectNames {
+		if fl == "" || strings.HasPrefix(strings.ToLower(name), fl) {
+			out = append(out, name)
+			if len(out) >= linkSuggestMax {
+				break
+			}
+		}
+	}
+	return out
+}
+
+// completeProjectSuggestion replaces the Project field's value with the
+// selected suggestion.
+func (e editPane) completeProjectSuggestion() (editPane, tea.Cmd) {
+	if !e.projSuggestActive || len(e.projSuggestList) == 0 {
+		return e, nil
+	}
+	sel := e.projSuggestSel
+	if sel >= len(e.projSuggestList) {
+		sel = 0
+	}
+	e.projInput.SetValue(e.projSuggestList[sel])
+	e.projInput.CursorEnd()
+
+	e.projSuggestActive = false
+	e.projSuggestList = nil
+	e.projSuggestSel = 0
+	e.ta.SetHeight(calcBodyHeight(e.contentHeight))
+	return e, nil
 }
 
 func (e editPane) render(width, height int) string {
@@ -636,7 +738,28 @@ func (e editPane) render(width, height int) string {
 		Width(width).
 		Render(e.footerText(width, totalLines))
 
-	parts := []string{titleRow, stateRow, tagsRow, projRow, sep, e.ta.View()}
+	parts := []string{titleRow, stateRow, tagsRow, projRow}
+
+	// Show project suggestions directly under the Project field.
+	if e.projSuggestActive && len(e.projSuggestList) > 0 {
+		t := activeTheme
+		limit := len(e.projSuggestList)
+		if limit > linkSuggestMax {
+			limit = linkSuggestMax
+		}
+		for i := 0; i < limit; i++ {
+			sel := i == e.projSuggestSel
+			sty := lipgloss.NewStyle().Width(width).Background(t.DropdownBg).Foreground(t.TextPrimary)
+			indicator := "  "
+			if sel {
+				sty = sty.Background(t.Accent).Foreground(t.AccentFg)
+				indicator = "▶ "
+			}
+			parts = append(parts, sty.Render(indicator+e.projSuggestList[i]))
+		}
+	}
+
+	parts = append(parts, sep, e.ta.View())
 
 	// Show link suggestions between body and footer.
 	if e.linkSuggestActive && len(e.linkSuggestList) > 0 {

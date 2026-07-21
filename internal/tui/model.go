@@ -160,14 +160,55 @@ func (m *Model) resizeOpenEditors(l layout) {
 // note viewer. Used by Ctrl+S, and by the palette when a command other than
 // :insert is run mid-edit — those commands act on the saved note, so the
 // draft must be committed first or a later save would clobber them.
+//
+// The Project field is validated (EnsureProject, which enforces the
+// max-active-projects limit) before anything is mutated or saved: a
+// max-reached error must leave both the draft and the on-disk note
+// untouched and keep the editor open, rather than silently losing the
+// user's edits.
 func (m *Model) commitEditorDraft(sp *splitPane) {
 	n := sp.editor.note
+	newProject := strings.TrimSpace(sp.editor.projInput.Value())
+	oldProject := n.Project
+
+	if newProject != "" && newProject != oldProject {
+		if _, err := m.vault.Projects.EnsureProject(newProject); err != nil {
+			m.statusMsg = "error: " + err.Error()
+			return
+		}
+	}
+
 	oldNote := *n // snapshot before mutation
 	n.Body = sp.editor.ta.Value()
 	n.State = vault.AllStates[sp.editor.stateIdx]
 	n.Tags = parseTags(sp.editor.tagsInput.Value())
-	n.Project = strings.TrimSpace(sp.editor.projInput.Value())
-	if saveErr := m.vault.Save(n); saveErr != nil {
+
+	var saveErr error
+	switch {
+	case newProject == oldProject:
+		n.Project = newProject
+		saveErr = m.vault.Save(n)
+		if saveErr == nil {
+			m.index.Upsert(n)
+		}
+	case newProject != "":
+		saveErr = m.assignProjectToNote(n, newProject)
+	default: // project cleared (oldProject was non-empty)
+		m.recordDetach(n) // n.Project still holds oldProject here
+		n.Project = ""
+		// An orphaned Projects-state note with no project is invalid; fall
+		// back to Inbox unless the user explicitly picked a different state
+		// in the same edit (n.State was already updated above in that case).
+		if n.State == vault.StateProjects {
+			n.State = vault.StateInbox
+		}
+		saveErr = m.vault.Save(n)
+		if saveErr == nil {
+			m.index.Upsert(n)
+		}
+	}
+
+	if saveErr != nil {
 		m.statusMsg = "save error: " + saveErr.Error()
 	} else {
 		rec := undoRecord{oldNote: oldNote, newNote: *n}
@@ -176,7 +217,6 @@ func (m *Model) commitEditorDraft(sp *splitPane) {
 			m.undoStack = m.undoStack[1:]
 		}
 		m.redoStack = nil
-		m.index.Upsert(n)
 		sp.viewer = sp.viewer.withNote(n)
 		l := m.computeLayout()
 		sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
@@ -548,7 +588,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if sp.activeView == viewNote && sp.viewer.note != nil {
 				l := m.computeLayout()
 				var cmd tea.Cmd
-				sp.editor, cmd = newEditPane(sp.viewer.note, l.paneWidth, l.contentHeight, sortedNotes(m.vault), m.cfg.LineNumbers, m.cfg.Keymap.Save)
+				sp.editor, cmd = newEditPane(sp.viewer.note, l.paneWidth, l.contentHeight, sortedNotes(m.vault), m.vault.Projects.ActiveNames(), m.cfg.LineNumbers, m.cfg.Keymap.Save)
 				sp.activeView = viewEdit
 				m.activePane = paneMain
 				return m, cmd
