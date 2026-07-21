@@ -1091,6 +1091,123 @@ func TestHeadlessFinishedTasksSinkWithDuplicateText(t *testing.T) {
 	}
 }
 
+// TestProcessCheckboxesAndCodeDimsWrappedContinuationLines guards #17 at the
+// same unit level as TestProcessCheckboxesAndCodeMutesFinishedTasks below,
+// for the same reason: lipgloss emits no color codes without a real color
+// profile, which a headless test binary doesn't have. A finished task's
+// cbMark sentinel only lands on its first rendered line — after glamour
+// word-wraps a long task, every continuation line must still be dimmed, and
+// the run must stop at the next blank line or task, not bleed into either.
+func TestProcessCheckboxesAndCodeDimsWrappedContinuationLines(t *testing.T) {
+	styled := func(text string) string {
+		return "\x1b[38;5;252m" + text + "\x1b[0m"
+	}
+	insertCBMark := func(s string) string {
+		idx := strings.Index(s, "] ") + len("] ")
+		return s[:idx] + cbMark + s[idx:]
+	}
+
+	lines := []string{
+		insertCBMark(styled("[x] first line of a long wrapped task")),
+		styled("continuation line one of the same task"),
+		styled("continuation line two of the same task"),
+		"", // blank separator — must end the dim run
+		insertCBMark(styled("[ ] a following unfinished task")),
+	}
+	rendered := strings.Join(lines, "\n")
+
+	refs := []checkboxRef{
+		{rawLine: 0, checked: true},
+		{rawLine: 1, checked: false},
+	}
+
+	out, _, _ := processCheckboxesAndCode(rendered, refs, nil)
+	outLines := strings.Split(out, "\n")
+
+	if outLines[0] == lines[0] {
+		t.Errorf("finished task's first line was not re-tinted: %q", outLines[0])
+	}
+	if outLines[1] == lines[1] {
+		t.Errorf("wrapped continuation line 1 was not dimmed: %q", outLines[1])
+	}
+	if xansi.Strip(outLines[1]) != "continuation line one of the same task" {
+		t.Errorf("continuation line 1 plain text corrupted: %q", outLines[1])
+	}
+	if outLines[2] == lines[2] {
+		t.Errorf("wrapped continuation line 2 was not dimmed: %q", outLines[2])
+	}
+	if outLines[3] != lines[3] {
+		t.Errorf("blank separator line was altered: %q, want unchanged %q", outLines[3], lines[3])
+	}
+	wantFollowing := styled("[ ] a following unfinished task")
+	if outLines[4] != wantFollowing {
+		t.Errorf("following unfinished task line = %q, want unchanged %q (dim run must not bleed past the blank line)", outLines[4], wantFollowing)
+	}
+}
+
+// TestProcessCheckboxesAndCodeUnfinishedWrappedTaskUnchanged is the inverse
+// guard: an unfinished (unchecked) task's wrapped continuation lines must
+// never be dimmed, even though they carry no cbMark of their own.
+func TestProcessCheckboxesAndCodeUnfinishedWrappedTaskUnchanged(t *testing.T) {
+	styled := func(text string) string {
+		return "\x1b[38;5;252m" + text + "\x1b[0m"
+	}
+	insertCBMark := func(s string) string {
+		idx := strings.Index(s, "] ") + len("] ")
+		return s[:idx] + cbMark + s[idx:]
+	}
+
+	firstLine := styled("[ ] first line of a long unfinished task")
+	contLine := styled("continuation line of the same unfinished task")
+	rendered := strings.Join([]string{insertCBMark(firstLine), contLine}, "\n")
+	refs := []checkboxRef{{rawLine: 0, checked: false}}
+
+	out, _, _ := processCheckboxesAndCode(rendered, refs, nil)
+	outLines := strings.Split(out, "\n")
+
+	if outLines[0] != firstLine {
+		t.Errorf("unfinished task's first line changed: %q, want unchanged (sentinel-stripped only) %q", outLines[0], firstLine)
+	}
+	if outLines[1] != contLine {
+		t.Errorf("unfinished task's continuation line changed: %q, want unchanged %q", outLines[1], contLine)
+	}
+}
+
+// TestProcessCheckboxesAndCodeDimStopsAtNextTask guards the "not the next
+// block" half of #17: a done task immediately followed (no blank line) by
+// another task must dim the first task only, leaving the second untouched
+// by the dim run (it gets its own treatment based on its own checked state).
+func TestProcessCheckboxesAndCodeDimStopsAtNextTask(t *testing.T) {
+	styled := func(text string) string {
+		return "\x1b[38;5;252m" + text + "\x1b[0m"
+	}
+	insertCBMark := func(s string) string {
+		idx := strings.Index(s, "] ") + len("] ")
+		return s[:idx] + cbMark + s[idx:]
+	}
+
+	lines := []string{
+		insertCBMark(styled("[x] done task")),
+		insertCBMark(styled("[ ] a plain unfinished task right after")),
+	}
+	rendered := strings.Join(lines, "\n")
+	refs := []checkboxRef{
+		{rawLine: 0, checked: true},
+		{rawLine: 1, checked: false},
+	}
+
+	out, _, _ := processCheckboxesAndCode(rendered, refs, nil)
+	outLines := strings.Split(out, "\n")
+
+	if outLines[0] == lines[0] {
+		t.Errorf("done task line was not re-tinted: %q", outLines[0])
+	}
+	want := styled("[ ] a plain unfinished task right after")
+	if outLines[1] != want {
+		t.Errorf("following unfinished task line = %q, want unchanged %q", outLines[1], want)
+	}
+}
+
 // TestProcessCheckboxesAndCodeMutesFinishedTasks covers #12's table-like/
 // secondary styling requirement directly at the unit level (independent of
 // glamour's own color-profile detection, which differs between a real

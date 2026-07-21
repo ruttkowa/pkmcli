@@ -710,8 +710,18 @@ func processCheckboxesAndCode(rendered string, checkboxRefs []checkboxRef, codeR
 
 	cbIdx, codeIdx := 0, 0
 	openCodeLine := -1
+	// dimUntilNextTask keeps dimming a finished task's word-wrapped
+	// continuation lines (#17): the cbMark sentinel only lands on a task's
+	// first rendered line, so without this a long done task read as grey
+	// on line one and normal-colored on every wrapped line after it. The
+	// run ends at a blank line, the next task (any cbMark line), or a code
+	// fence boundary — never by indentation, since glamour indents nested
+	// list items the same as wrapped task text.
+	dimUntilNextTask := false
 
 	for lineIdx, line := range lines {
+		hasCodeFenceMark := strings.Contains(line, codeOpen) || strings.Contains(line, codeClose)
+
 		if idx := strings.Index(line, cbMark); idx != -1 {
 			finished := false
 			if cbIdx < len(checkboxRefs) {
@@ -729,6 +739,13 @@ func processCheckboxesAndCode(rendered string, checkboxRefs []checkboxRef, codeR
 				// from scratch, so an already-rendered result wikilink
 				// (#11) keeps its alias text and stays clickable via the
 				// existing linkLines mapping — only the color changes.
+				line = highlightPlain(line, activeTheme.Bg, activeTheme.TextDim)
+			}
+			dimUntilNextTask = finished
+		} else if dimUntilNextTask {
+			if strings.TrimSpace(line) == "" || hasCodeFenceMark {
+				dimUntilNextTask = false
+			} else {
 				line = highlightPlain(line, activeTheme.Bg, activeTheme.TextDim)
 			}
 		}

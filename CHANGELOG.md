@@ -143,6 +143,14 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   `:add project` argument), rendered as a dropdown under the field;
   `Tab`/`Enter` accepts, `Esc` dismisses the list without leaving the
   field. Issue #25. `internal/tui/editor.go`.
+- Viewer: a finished (checked) task now dims fully when glamour word-wraps
+  it onto multiple rendered lines, instead of only its first line — the
+  `cbMark` sentinel used to be the sole dimming trigger and only ever
+  lands on line one. The dim run now continues across continuation lines
+  and stops at the next blank line, the next task, or a code-fence
+  boundary (never by indentation, which glamour also uses for nested list
+  items). Issue #17. `internal/tui/viewer.go`
+  (`processCheckboxesAndCode`).
 
 ### Verify
 - `go test ./...` — clean.
@@ -181,6 +189,19 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   prefix — dropdown appeared under the field; `Tab` accepted "Homelab";
   `Ctrl+S` → note showed `State: projects · Project: Homelab`, sidebar
   auto-expanded Projects → Homelab with the note visible inside.
+- `TestProcessCheckboxesAndCodeDimsWrappedContinuationLines`,
+  `TestProcessCheckboxesAndCodeUnfinishedWrappedTaskUnchanged`,
+  `TestProcessCheckboxesAndCodeDimStopsAtNextTask` (#17) — unit-level on
+  `processCheckboxesAndCode` with synthetic ANSI input, same pattern as
+  the existing `TestProcessCheckboxesAndCodeMutesFinishedTasks`, since
+  lipgloss emits no color codes without a real terminal color profile
+  (confirmed empirically: a first pass through the full viewer+glamour
+  pipeline in a headless test produced zero ANSI color codes).
+- Manual (tmux): a long finished task wrapped across 3 rendered lines —
+  captured with `tmux capture-pane -e` to inspect the raw escape
+  sequences, all 3 lines carried the identical dim color code
+  (`38;2;76;86;105`), while a following unfinished task kept a different,
+  undimmed color — confirming the fix live, not just at the unit level.
 
 Remaining backlog tracked as GitHub issues (repo `ruttkowa/pkmcli`):
 soft-delete/trash (#1), text selection + copy/paste (#2), hotkey-bar
