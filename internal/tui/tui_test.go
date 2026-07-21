@@ -507,6 +507,40 @@ func TestHeadlessView(t *testing.T) {
 	}
 }
 
+// TestHeadlessViewNeverExceedsRequestedHeight guards #18's actual root
+// cause: the bottom hotkey/tooltip bar had no width safety net, so at
+// terminal widths too narrow for its full chip list, lipgloss word-wrapped
+// it onto a second line instead of clipping — silently rendering one row
+// taller than the window. A real terminal then has to scroll to show the
+// extra row, which desyncs every mouse click's Y coordinate from the row
+// the app's layout math assumes (reported as clicks landing "about 1.5
+// lines" off the sidebar item they targeted). The rendered frame must be
+// exactly m.height lines at every width, in every mode this covers.
+func TestHeadlessViewNeverExceedsRequestedHeight(t *testing.T) {
+	widths := []int{40, 50, 60, 80, 100, 120, 150, 200}
+	for _, w := range widths {
+		m := setupTUI(t)
+		model, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: 40})
+		m = model.(Model)
+
+		checkHeight := func(label string) {
+			t.Helper()
+			lines := strings.Split(m.View(), "\n")
+			if len(lines) != 40 {
+				t.Errorf("width=%d [%s]: rendered %d lines, want exactly 40 (delta=%d)", w, label, len(lines), len(lines)-40)
+			}
+		}
+
+		checkHeight("default")
+
+		m = step(t, m, key(":"), "open palette")
+		m = typeInPalette(t, m, "config")
+		m = step(t, m, key("enter"), "open config")
+		checkHeight("config")
+		m = step(t, m, key("esc"), "close config")
+	}
+}
+
 func TestHeadlessNavigation(t *testing.T) {
 	m := setupTUI(t)
 
@@ -2298,6 +2332,20 @@ func TestFooterRowNeverExceedsWidth(t *testing.T) {
 		row := footerRow(w, left, right)
 		if lipgloss.Width(row) > w {
 			t.Errorf("footerRow(%d): got width %d, row = %q", w, lipgloss.Width(row), row)
+		}
+	}
+}
+
+// TestFitTooltipBarNeverWrapsToASecondLine is the unit-level counterpart to
+// TestHeadlessViewNeverExceedsRequestedHeight: fitTooltipBar itself must
+// never produce more than one rendered line, at any width, for a bar with
+// far more chip text than a narrow terminal can hold.
+func TestFitTooltipBarNeverWrapsToASecondLine(t *testing.T) {
+	longBar := strings.Repeat("chip content ", 40)
+	for _, w := range []int{200, 100, 60, 40, 20, 10, 1, 0} {
+		out := fitTooltipBar(longBar, w)
+		if strings.Count(out, "\n") != 0 {
+			t.Errorf("fitTooltipBar(width=%d) produced %d newlines, want 0: %q", w, strings.Count(out, "\n"), out)
 		}
 	}
 }

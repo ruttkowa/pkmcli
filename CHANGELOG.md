@@ -158,6 +158,25 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   `())`. `Backspace` with any content between the pair still deletes a
   single character as before. Issue #21. `internal/tui/editor.go`
   (`updateBody`'s new `"backspace"` case, `charBeforeCursor`).
+- Fixed the actual root cause of #18 (reported as sidebar mouse clicks
+  landing "about 1.5 lines" off target): the bottom hotkey/tooltip bar
+  had no width safety net, so at terminal widths too narrow for its full
+  chip list (confirmed empirically: any width under ~150 columns with
+  the default global bar), `lipgloss.Style.Width` word-wrapped it onto a
+  second line instead of clipping — silently rendering one row taller
+  than the requested window height (measured: a 100x40 window rendered
+  41 lines). A real terminal has to scroll to show that extra row, which
+  desyncs every mouse click's Y coordinate from the row the app's layout
+  math assumes — `handleMouseClick`'s `y - 4` offset itself was already
+  correct, exactly as the original #18 triage found. Added
+  `fitTooltipBar`, the same hard-truncate safety net the editor/viewer
+  footers already use, applied to every exit path of
+  `renderTooltipBar`. `internal/tui/model.go`.
+  **Separately discovered, left unfixed (out of scope for #18):** the
+  help view (`?`) overflows far worse at narrow widths (measured up to
+  11 rows over budget at width 30) — a different bug, its content pane
+  isn't clipped to the layout's content height at all. Not a mouse-click
+  issue and not touched here.
 
 ### Verify
 - `go test ./...` — clean.
@@ -218,6 +237,18 @@ PATCH = fix-only). See `todo.md` for in-flight work.
 - Manual (tmux): typed `(` → `()`; `Backspace` → empty; typed `(` again →
   `()`, not `())` — reproduced then confirmed the fix for the exact
   reported regression.
+- `TestHeadlessViewNeverExceedsRequestedHeight` (#18) — asserts the
+  rendered frame is exactly the requested height across widths 40-200,
+  in the default and config-overlay modes (a scratch measurement caught
+  the actual bug first: a 100x40 window rendered 41 lines before the
+  fix, 40 after, across every width from 40 to 200).
+  `TestFitTooltipBarNeverWrapsToASecondLine` covers `fitTooltipBar`
+  directly.
+- Manual (tmux): at 100x40 — the size that reproduced the bug — the
+  breadcrumb row (previously invisible, scrolled off by the overflow)
+  is back; sent a raw SGR mouse-click escape sequence at the exact
+  row/column the sidebar layout math expects for the Inbox glyph, and it
+  correctly toggled Inbox's expand state with no offset.
 
 Remaining backlog tracked as GitHub issues (repo `ruttkowa/pkmcli`):
 soft-delete/trash (#1), text selection + copy/paste (#2), hotkey-bar

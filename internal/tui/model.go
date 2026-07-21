@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	xansi "github.com/charmbracelet/x/ansi"
 )
 
 func timeNow() time.Time { return time.Now().Truncate(time.Second) }
@@ -1406,6 +1407,23 @@ func keyChipLabel(key string) string {
 	}
 }
 
+// fitTooltipBar guarantees the bottom hotkey/tooltip bar renders as exactly
+// one line. lipgloss.Style.Width alone pads a short string but WORD-WRAPS a
+// long one onto a second line instead of clipping it — at narrower terminal
+// widths the full chip list doesn't fit, so the frame silently grew one row
+// taller than the window height. A real terminal then has to scroll to show
+// it, which desyncs every mouse click's Y coordinate from the row the app's
+// layout math assumes (#18) — the visible symptom was clicks landing "about
+// 1.5 lines" off the sidebar item they were meant to hit. Hard-truncating
+// here, the same safety-net technique the editor/viewer footers already use
+// (see editPane.footerText), keeps the frame exactly m.height rows tall.
+func fitTooltipBar(bar string, width int) string {
+	if lipgloss.Width(bar) > width {
+		bar = xansi.Truncate(bar, width, "")
+	}
+	return lipgloss.NewStyle().Width(width).Background(activeTheme.StatusBg).Render(bar)
+}
+
 func (m Model) renderTooltipBar() string {
 	chip := func(key, action string) string {
 		k := lipgloss.NewStyle().
@@ -1429,19 +1447,19 @@ func (m Model) renderTooltipBar() string {
 		if m.statusMsg != "" {
 			bar += lipgloss.NewStyle().Foreground(activeTheme.Cursor).Render("  " + m.statusMsg)
 		}
-		return lipgloss.NewStyle().Width(m.width).Background(activeTheme.StatusBg).Render(bar)
+		return fitTooltipBar(bar, m.width)
 	}
 
 	// Config overlay: show config-specific hints.
 	if m.showConfig {
 		bar := strings.Join([]string{chip("↑↓", "select"), chip("←→", "change"), chip("Tab", "section"), chip("Esc", "save & close")}, " ")
-		return lipgloss.NewStyle().Width(m.width).Background(activeTheme.StatusBg).Render(bar)
+		return fitTooltipBar(bar, m.width)
 	}
 
 	// Import overlay: show import-specific hints.
 	if m.showImport {
 		bar := strings.Join([]string{chip("Tab", "next field"), chip("Space", "toggle mode"), chip("Enter", "confirm/complete"), chip("Esc", "cancel")}, " ")
-		return lipgloss.NewStyle().Width(m.width).Background(activeTheme.StatusBg).Render(bar)
+		return fitTooltipBar(bar, m.width)
 	}
 
 	// Pane picker mode.
@@ -1450,25 +1468,25 @@ func (m Model) renderTooltipBar() string {
 		bar := strings.Join([]string{chip("←/→", "select pane"), chip("↵", "confirm"), chip("Esc", "cancel")}, " ")
 		bar += lipgloss.NewStyle().Foreground(activeTheme.Cursor).
 			Render(strconv.Itoa(m.pickerIdx+1) + "/" + strconv.Itoa(total))
-		return lipgloss.NewStyle().Width(m.width).Background(activeTheme.StatusBg).Render(bar)
+		return fitTooltipBar(bar, m.width)
 	}
 
 	// Help view: show scroll and close hints only.
 	if m.activePane == paneMain && len(m.splits) > 0 && m.splits[m.activeSplit].activeView == viewHelp {
 		bar := strings.Join([]string{chip("j/k", "scroll"), chip("g/G", "top/bottom"), chip("Esc", "close help")}, " ")
-		return lipgloss.NewStyle().Width(m.width).Background(activeTheme.StatusBg).Render(bar)
+		return fitTooltipBar(bar, m.width)
 	}
 
 	// Task Overview: show cursor movement, open, and close hints.
 	if m.activePane == paneMain && len(m.splits) > 0 && m.splits[m.activeSplit].activeView == viewTasksOverview {
 		bar := strings.Join([]string{chip("j/k", "select"), chip("g/G", "top/bottom"), chip("Enter", "open note"), chip("Esc", "close")}, " ")
-		return lipgloss.NewStyle().Width(m.width).Background(activeTheme.StatusBg).Render(bar)
+		return fitTooltipBar(bar, m.width)
 	}
 
 	// Edit mode: show edit-specific hints.
 	if m.activePane == paneMain && len(m.splits) > 0 && m.splits[m.activeSplit].activeView == viewEdit {
 		bar := strings.Join([]string{chip(keyChipLabel(m.cfg.Keymap.Save), "save"), chip(keyChipLabel(m.cfg.Keymap.Palette), "command"), chip("Tab", "cycle fields"), chip("Esc", "save & close"), chip("^C", "quit")}, " ")
-		return lipgloss.NewStyle().Width(m.width).Background(activeTheme.StatusBg).Render(bar)
+		return fitTooltipBar(bar, m.width)
 	}
 
 	// Group label style for SHIFT+ / CTRL+ prefixes.
