@@ -727,6 +727,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						cmds = append(cmds, copyToClipboardCmd(content))
 						m.statusMsg = "copied code block"
 					}
+					if sp.viewer.pendingFoldRaw >= 0 {
+						raw := sp.viewer.pendingFoldRaw
+						collapse := sp.viewer.pendingFoldCollapse
+						sp.viewer.pendingFoldRaw = -1
+						m.applyFold(sp, raw, collapse)
+					}
 				}
 			case viewProjectDetail:
 				m.updateProjectDetail(sp, msg)
@@ -804,8 +810,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for i := range m.splits {
 				if m.splits[i].viewer.note != nil && m.splits[i].viewer.note.ID == msg.note.ID {
 					row, col, scroll := m.splits[i].viewer.cursorRow, m.splits[i].viewer.cursorCol, m.splits[i].viewer.scrollOff
+					folded := m.splits[i].viewer.folded
 					m.splits[i].viewer = m.splits[i].viewer.withNote(msg.note)
 					m.splits[i].viewer.cursorRow, m.splits[i].viewer.cursorCol, m.splits[i].viewer.scrollOff = row, col, scroll
+					m.splits[i].viewer.folded = folded
 					m.splits[i].viewer = m.splits[i].viewer.preRender(l.paneWidth, m.titleSet)
 				}
 			}
@@ -1064,13 +1072,43 @@ func (m *Model) handleMouseClick(x, y int) {
 				return // click is in the sticky header or fold separator, no links there
 			}
 			bodyLine := (contentRow - sp.viewer.headerLineCount - 1) + sp.viewer.scrollOff
-			if target := sp.viewer.linkAtLine(bodyLine); target != "" {
+			if _, ok := sp.viewer.headingRawLineAt(bodyLine); ok {
+				m.toggleFoldAt(sp, bodyLine)
+			} else if target := sp.viewer.linkAtLine(bodyLine); target != "" {
 				m.openOrCreateNote(target)
 			} else {
 				m.toggleCheckboxAt(sp, bodyLine)
 			}
 		}
 	}
+}
+
+// applyFold sets the fold state of the heading at rawLine (#20), forces a
+// re-render (fold state isn't part of preRender's width-based cache key, so
+// clearing m.rendered is what actually invalidates it), and clamps
+// cursor/scroll into the possibly-shortened content afterward — a collapse
+// can leave both pointing past the new end.
+func (m *Model) applyFold(sp *splitPane, rawLine int, collapsed bool) {
+	if sp.viewer.folded == nil {
+		sp.viewer.folded = map[int]bool{}
+	}
+	sp.viewer.folded[rawLine] = collapsed
+	sp.viewer.rendered = ""
+	l := m.computeLayout()
+	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+	sp.viewer = sp.viewer.clampScroll()
+	sp.viewer = sp.viewer.followCursor(l.contentHeight)
+}
+
+// toggleFoldAt flips the fold state of the heading at a rendered body line,
+// if any — the mouse-click path (#20); Left/Right on a heading set a fixed
+// direction instead (see viewerModel.update's pendingFoldRaw handling below).
+func (m *Model) toggleFoldAt(sp *splitPane, bodyLine int) {
+	rawLine, ok := sp.viewer.headingRawLineAt(bodyLine)
+	if !ok {
+		return
+	}
+	m.applyFold(sp, rawLine, !sp.viewer.folded[rawLine])
 }
 
 // toggleCheckboxAt flips the "[ ]"/"[x]" checkbox on a rendered body line, if
@@ -1112,8 +1150,10 @@ func (m *Model) applyCheckboxToggle(sp *splitPane, rawLine int) {
 	m.index.Upsert(n)
 
 	row, col, scroll := sp.viewer.cursorRow, sp.viewer.cursorCol, sp.viewer.scrollOff
+	folded := sp.viewer.folded
 	sp.viewer = sp.viewer.withNote(n)
 	sp.viewer.cursorRow, sp.viewer.cursorCol, sp.viewer.scrollOff = row, col, scroll
+	sp.viewer.folded = folded
 	l := m.computeLayout()
 	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
 }

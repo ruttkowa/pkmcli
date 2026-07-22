@@ -1155,7 +1155,7 @@ func TestProcessCheckboxesAndCodeDimsWrappedContinuationLines(t *testing.T) {
 		{rawLine: 1, checked: false},
 	}
 
-	out, _, _ := processCheckboxesAndCode(rendered, refs, nil)
+	out, _, _, _ := processCheckboxesAndCode(rendered, refs, nil, nil)
 	outLines := strings.Split(out, "\n")
 
 	if outLines[0] == lines[0] {
@@ -1196,7 +1196,7 @@ func TestProcessCheckboxesAndCodeUnfinishedWrappedTaskUnchanged(t *testing.T) {
 	rendered := strings.Join([]string{insertCBMark(firstLine), contLine}, "\n")
 	refs := []checkboxRef{{rawLine: 0, checked: false}}
 
-	out, _, _ := processCheckboxesAndCode(rendered, refs, nil)
+	out, _, _, _ := processCheckboxesAndCode(rendered, refs, nil, nil)
 	outLines := strings.Split(out, "\n")
 
 	if outLines[0] != firstLine {
@@ -1230,7 +1230,7 @@ func TestProcessCheckboxesAndCodeDimStopsAtNextTask(t *testing.T) {
 		{rawLine: 1, checked: false},
 	}
 
-	out, _, _ := processCheckboxesAndCode(rendered, refs, nil)
+	out, _, _, _ := processCheckboxesAndCode(rendered, refs, nil, nil)
 	outLines := strings.Split(out, "\n")
 
 	if outLines[0] == lines[0] {
@@ -1266,7 +1266,7 @@ func TestProcessCheckboxesAndCodeMutesFinishedTasks(t *testing.T) {
 		{rawLine: 1, checked: true},
 	}
 
-	out, checkboxLines, _ := processCheckboxesAndCode(rendered, refs, nil)
+	out, checkboxLines, _, _ := processCheckboxesAndCode(rendered, refs, nil, nil)
 	outLines := strings.Split(out, "\n")
 
 	if checkboxLines[0] != 0 || checkboxLines[1] != 1 {
@@ -1389,6 +1389,281 @@ func TestHeadlessVaultChangedPreservesCursor(t *testing.T) {
 	got := m.splits[m.activeSplit].viewer
 	if got.cursorRow != 10 || got.cursorCol != 2 || got.scrollOff != 5 {
 		t.Errorf("cursor/scroll position not preserved across vaultChangedMsg: got row=%d col=%d scroll=%d, want row=10 col=2 scroll=5", got.cursorRow, got.cursorCol, got.scrollOff)
+	}
+}
+
+// foldTestBody is shared by the #20 fold tests: a heading with a task and a
+// nested sub-heading (to hide when collapsed), followed by a sibling heading
+// at the same level containing a link and a task (to prove content AFTER a
+// fold still resolves to the correct raw line — the index-shift regression
+// the spec calls out).
+const foldTestBody = `Intro text before any heading.
+
+## Section A
+- [ ] task under A
+
+### Sub A1
+content under sub
+
+## Section B
+[[Target Note]]
+- [ ] task under B`
+
+// foldTestNote creates a note with foldTestBody plus a link target, and
+// returns the note opened and pre-rendered in the active split.
+func foldTestNote(t *testing.T, m Model) (Model, *vault.Note) {
+	t.Helper()
+	target, err := m.vault.Create("Target Note")
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	m.index.Upsert(target)
+	m.titleSet[strings.ToLower(target.Title)] = true
+
+	n, err := m.vault.Create("Foldable")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	n.Body = foldTestBody
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+
+	sp := &m.splits[m.activeSplit]
+	sp.openNote(n)
+	l := m.computeLayout()
+	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+	return m, n
+}
+
+// TestHiddenLinesForFoldHidesNestedHeadingRegardlessOfOwnState guards #20's
+// core folding rule directly: collapsing "## Section A" (raw line 2) must
+// hide everything up to but not including "## Section B" (raw line 8) —
+// including the nested "### Sub A1" (raw line 5) and its content, regardless
+// of Sub A1's own fold state, which is never set here.
+func TestHiddenLinesForFoldHidesNestedHeadingRegardlessOfOwnState(t *testing.T) {
+	lines := strings.Split(foldTestBody, "\n")
+	if lines[2] != "## Section A" || lines[8] != "## Section B" {
+		t.Fatalf("test body layout changed, fix line indices: %q / %q", lines[2], lines[8])
+	}
+
+	hidden := hiddenLinesForFold(lines, map[int]bool{2: true})
+
+	wantHidden := []int{3, 4, 5, 6, 7}
+	for _, i := range wantHidden {
+		if !hidden[i] {
+			t.Errorf("line %d (%q) should be hidden, wasn't", i, lines[i])
+		}
+	}
+	wantVisible := []int{0, 1, 2, 8, 9, 10}
+	for _, i := range wantVisible {
+		if hidden[i] {
+			t.Errorf("line %d (%q) should be visible, was hidden", i, lines[i])
+		}
+	}
+}
+
+// TestHeadlessFoldLinkAndCheckboxBelowFoldStillResolve is the index-shift
+// regression #20's spec calls out by name: with "## Section A" collapsed, a
+// link and a checkbox in the following "## Section B" (raw lines 9 and 10)
+// must still map to the correct raw line / target — not shifted by however
+// many lines were hidden above them.
+func TestHeadlessFoldLinkAndCheckboxBelowFoldStillResolve(t *testing.T) {
+	m := setupTUI(t)
+	m, _ = foldTestNote(t, m)
+	sp := &m.splits[m.activeSplit]
+
+	sp.viewer.folded = map[int]bool{2: true}
+	sp.viewer.rendered = ""
+	l := m.computeLayout()
+	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+
+	foundLink := false
+	for _, target := range sp.viewer.linkLines {
+		if target == "Target Note" {
+			foundLink = true
+		}
+	}
+	if !foundLink {
+		t.Errorf("expected a link to Target Note after the fold, linkLines=%v rendered=%q", sp.viewer.linkLines, sp.viewer.rendered)
+	}
+
+	foundCheckbox := false
+	for _, raw := range sp.viewer.checkboxLines {
+		if raw == 10 {
+			foundCheckbox = true
+		}
+		if raw == 3 {
+			t.Errorf("checkbox for the HIDDEN raw line 3 (task under A) must not appear in checkboxLines")
+		}
+	}
+	if !foundCheckbox {
+		t.Errorf("expected a checkbox mapping to raw line 10 (task under B), checkboxLines=%v", sp.viewer.checkboxLines)
+	}
+
+	// The hidden task's text must not appear anywhere in the rendered output.
+	if strings.Contains(xansi.Strip(sp.viewer.rendered), "task under A") {
+		t.Error("hidden task text leaked into the rendered output")
+	}
+	if !strings.Contains(xansi.Strip(sp.viewer.rendered), "task under B") {
+		t.Error("visible task text (after the fold) missing from rendered output")
+	}
+}
+
+// TestHeadlessFoldCollapseExpandRoundTrips guards that toggling a fold off
+// again produces byte-identical output to before it was folded.
+func TestHeadlessFoldCollapseExpandRoundTrips(t *testing.T) {
+	m := setupTUI(t)
+	m, _ = foldTestNote(t, m)
+	sp := &m.splits[m.activeSplit]
+	original := sp.viewer.rendered
+
+	m.applyFold(sp, 2, true)
+	if sp.viewer.rendered == original {
+		t.Fatal("expected the rendered output to change after collapsing")
+	}
+
+	m.applyFold(sp, 2, false)
+	if sp.viewer.rendered != original {
+		t.Errorf("collapse/expand round-trip mismatch:\noriginal=%q\ngot=     %q", original, sp.viewer.rendered)
+	}
+}
+
+// TestHeadlessFoldKeyboardLeftRightOnHeading drives the actual interactive
+// path end-to-end: put the cursor on a heading's rendered line, press Left
+// (collapse) then Right (expand) through Model.Update, and confirm the fold
+// state and rendered content follow.
+func TestHeadlessFoldKeyboardLeftRightOnHeading(t *testing.T) {
+	m := setupTUI(t)
+	m, _ = foldTestNote(t, m)
+	sp := &m.splits[m.activeSplit]
+
+	headingRow := -1
+	for rl, raw := range sp.viewer.headingLines {
+		if raw == 2 {
+			headingRow = rl
+		}
+	}
+	if headingRow < 0 {
+		t.Fatalf("Section A heading not found in headingLines=%v", sp.viewer.headingLines)
+	}
+	m.splits[m.activeSplit].viewer.cursorRow = headingRow
+
+	m = step(t, m, tea.KeyMsg{Type: tea.KeyLeft}, "left (collapse heading)")
+	if !m.splits[m.activeSplit].viewer.folded[2] {
+		t.Fatal("expected raw line 2 folded after Left on the heading")
+	}
+	if strings.Contains(xansi.Strip(m.splits[m.activeSplit].viewer.rendered), "task under A") {
+		t.Error("hidden task text still present after collapsing via Left")
+	}
+
+	m = step(t, m, tea.KeyMsg{Type: tea.KeyRight}, "right (expand heading)")
+	if m.splits[m.activeSplit].viewer.folded[2] {
+		t.Fatal("expected raw line 2 unfolded after Right on the heading")
+	}
+	if !strings.Contains(xansi.Strip(m.splits[m.activeSplit].viewer.rendered), "task under A") {
+		t.Error("task text missing after expanding via Right")
+	}
+}
+
+// TestHeadlessLeftRightOnNonHeadingStillMovesCursor guards that the heading
+// guard in Left/Right doesn't leak into ordinary cursor movement.
+func TestHeadlessLeftRightOnNonHeadingStillMovesCursor(t *testing.T) {
+	m := setupTUI(t)
+	m, _ = foldTestNote(t, m)
+	sp := &m.splits[m.activeSplit]
+
+	// Raw line 0 ("Intro text...") is not a heading; find its rendered row.
+	nonHeadingRow := -1
+	for i, l := range strings.Split(sp.viewer.rendered, "\n") {
+		if strings.Contains(l, "Intro text") {
+			nonHeadingRow = i
+			break
+		}
+	}
+	if nonHeadingRow < 0 {
+		t.Fatalf("intro line not found in rendered=%q", sp.viewer.rendered)
+	}
+	m.splits[m.activeSplit].viewer.cursorRow = nonHeadingRow
+	m.splits[m.activeSplit].viewer.cursorCol = 0
+
+	m = step(t, m, tea.KeyMsg{Type: tea.KeyRight}, "right (move cursor, not a heading)")
+	got := m.splits[m.activeSplit].viewer
+	if got.cursorCol != 1 || got.cursorRow != nonHeadingRow {
+		t.Errorf("expected ordinary cursor movement (col 0->1, same row), got row=%d col=%d", got.cursorRow, got.cursorCol)
+	}
+	if len(got.folded) != 0 {
+		t.Errorf("expected no fold state change from Right on a non-heading line, folded=%v", got.folded)
+	}
+}
+
+// TestHeadlessFoldCollapseNearEndNoPanic guards the clamp trap: with the
+// cursor sitting on the last rendered line, collapsing a heading near the
+// top must clamp cursor/scroll into the shortened content rather than
+// leaving them out of range (which would panic on the next render).
+func TestHeadlessFoldCollapseNearEndNoPanic(t *testing.T) {
+	m := setupTUI(t)
+	m, _ = foldTestNote(t, m)
+	sp := &m.splits[m.activeSplit]
+
+	lines := strings.Split(sp.viewer.rendered, "\n")
+	sp.viewer.cursorRow = len(lines) - 1
+	sp.viewer.scrollOff = len(lines) - 1
+
+	m.applyFold(sp, 2, true)
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("panic after collapsing with cursor/scroll near the end: %v", r)
+		}
+	}()
+	_ = m.View()
+
+	got := m.splits[m.activeSplit].viewer
+	newLines := strings.Split(got.rendered, "\n")
+	if got.cursorRow >= len(newLines) {
+		t.Errorf("cursorRow=%d out of range for %d rendered lines", got.cursorRow, len(newLines))
+	}
+	if got.scrollOff >= len(newLines) {
+		t.Errorf("scrollOff=%d out of range for %d rendered lines", got.scrollOff, len(newLines))
+	}
+}
+
+// TestHeadlessMouseClickOnHeadingTogglesFold covers the mouse path (#20):
+// clicking anywhere on a heading's rendered line toggles its fold, the same
+// as the sidebar's click-to-toggle convention.
+func TestHeadlessMouseClickOnHeadingTogglesFold(t *testing.T) {
+	m := setupTUI(t)
+	m, _ = foldTestNote(t, m)
+	sp := &m.splits[m.activeSplit]
+
+	headingRow := -1
+	for rl, raw := range sp.viewer.headingLines {
+		if raw == 2 {
+			headingRow = rl
+		}
+	}
+	if headingRow < 0 {
+		t.Fatalf("Section A heading not found in headingLines=%v", sp.viewer.headingLines)
+	}
+
+	// Reproduce the y-coordinate math handleMouseClick itself uses: content
+	// starts at y=2, minus the sticky header, minus scrollOff (0 here). x
+	// must land past the sidebar + gap or the click routes to the sidebar
+	// instead of the main pane.
+	y := headingRow + sp.viewer.headerLineCount + 1 + 2
+	x := m.computeLayout().sidebarWidth + 5
+	m.handleMouseClick(x, y)
+
+	if !m.splits[m.activeSplit].viewer.folded[2] {
+		t.Fatal("expected raw line 2 folded after clicking its heading")
+	}
+
+	m.handleMouseClick(x, y)
+	if m.splits[m.activeSplit].viewer.folded[2] {
+		t.Fatal("expected raw line 2 unfolded after clicking its heading again")
 	}
 }
 

@@ -161,6 +161,9 @@ The note-list view (search results, section browsing).
 | `Esc` / `Backspace` | Back (pops history; returns to the note list once history is empty) |
 | Click a `[[link]]` | Open it — creates the note first if it doesn't exist yet |
 | Click a `- [ ]` checkbox | Toggle it and save |
+| `←` on a heading | Collapse it |
+| `→` on a heading | Expand it |
+| Click a heading | Toggle it collapsed/expanded |
 
 **Block cursor:** a solid (non-blinking) cursor that moves through the rendered note independently of `j`/`k` scrolling, auto-scrolling the viewer when it reaches the edge. When it sits on a link, checkbox, or fenced code block, that element is highlighted. `Enter` then:
 
@@ -173,6 +176,8 @@ The note-list view (search results, section browsing).
 **Finished tasks sink to the bottom.** Within each contiguous block of task lines, unfinished tasks are always shown first and finished tasks last (each group keeping its original relative order) — toggling a task done moves it to the bottom of its block on screen, and un-toggling moves it back. This is display-only: the `.md` file's line order never changes, only the rendered position. Finished tasks also render with a muted, secondary style so the unfinished ones stand out. The checkbox stays toggleable in place either way (un-toggle an accidental done the same way you toggled it).
 
 The bottom row of the pane is a fixed footer showing `Last saved: HH:MM:SS` (from the note's `updated` frontmatter field) alongside the scroll percentage — not shown in the global hotkey bar.
+
+**Foldable headings.** Every heading shows a `▼`/`▶` glyph. Collapsing one (`←`, or a click, on the block cursor's heading line) hides everything until the next heading of the same or higher level — nested sub-headings inside a collapsed section stay hidden too, regardless of their own fold state. `→` expands it again, or click it a second time. Fold state is view-only: it's per-note, resets when you switch notes, and never touches the file on disk.
 
 ### Editor
 

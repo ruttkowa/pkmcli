@@ -199,6 +199,20 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   confirm the overwrite; no note open shows an error instead of an empty
   prompt. Issue #23. `internal/tui/export_pane.go`,
   `internal/tui/commands.go` (`cmdExport`, `runExport`).
+- Note viewer: headings are now foldable. Every heading shows a `▼`/`▶`
+  glyph; `←` on a heading (block cursor) collapses it, `→` expands it,
+  and clicking a heading toggles it. Collapsing hides everything until
+  the next heading of the same or higher level, including nested
+  sub-headings' own lines regardless of their individual fold state.
+  Folded before rendering (dropped raw lines never reach glamour), so
+  the existing rendered-line→raw-line maps (links, checkboxes) stay
+  correct for content after a fold — verified against the exact
+  index-shift regression a naive after-render approach would hit.
+  View-only, per-note, never written to the note; explicitly preserved
+  (not reset) across a checkbox-toggle reload of the same note, the same
+  way cursor/scroll position already was. Issue #20. `internal/tui/viewer.go`
+  (`hiddenLinesForFold`, `annotateInteractive`, `processCheckboxesAndCode`),
+  `internal/tui/model.go` (`applyFold`, `toggleFoldAt`).
 
 ### Verify
 - `go test ./...` — clean.
@@ -289,6 +303,21 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   filename; cleared it, typed an out-of-vault target path, confirmed —
   popover closed, exported file byte-identical to the vault copy, vault
   copy unchanged.
+- `internal/tui/tui_test.go` (#20): `TestHiddenLinesForFoldHidesNestedHeadingRegardlessOfOwnState`,
+  `TestHeadlessFoldLinkAndCheckboxBelowFoldStillResolve` (the index-shift
+  regression), `TestHeadlessFoldCollapseExpandRoundTrips`,
+  `TestHeadlessFoldKeyboardLeftRightOnHeading`,
+  `TestHeadlessLeftRightOnNonHeadingStillMovesCursor`,
+  `TestHeadlessFoldCollapseNearEndNoPanic`,
+  `TestHeadlessMouseClickOnHeadingTogglesFold`.
+- Manual (tmux): typed a note with two `##` headings, a task line, and a
+  self-link in the second section; both headings showed `▼`; clicking
+  the first heading collapsed it to `▶` and hid its content, leaving the
+  second heading and its content (now shifted up) untouched; clicked the
+  self-link past the fold — it opened correctly (confirmed by the fold
+  resetting on the fresh note-open), proving the link resolved to the
+  right target despite the shifted rendered position. Clicked the first
+  heading again to re-expand it.
 
 Remaining backlog tracked as GitHub issues (repo `ruttkowa/pkmcli`):
 soft-delete/trash (#1), text selection + copy/paste (#2), hotkey-bar
