@@ -60,6 +60,15 @@ READING & EDITING
   HH:MM:SS"; an "● Unsaved changes" marker appears next to it whenever
   the draft (body, tags, project, or state) differs from the saved note.
 
+  Line operations (body only): Ctrl+L is a leader — the next key runs
+  one op, anything else (including Esc) cancels it without typing that
+  key into the note.
+    Ctrl+L y    yank (copy) the current line
+    Ctrl+L d    delete (cut) the current line
+    Ctrl+L p    paste the last yanked/deleted line below the cursor
+  The register holds one line for this editor session only (cleared on
+  close). A deleted line is Ctrl+Z-recoverable like any other save.
+
 IMPORT POPOVER  —  I or :import [path]
   Path field    type or arrow-select a suggestion (live directory listing,
                 dirs and .md files, filtered as you type)

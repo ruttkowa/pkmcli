@@ -267,6 +267,26 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   `buildTaskOverviewRows` and shared by both), `internal/tui/model.go`
   (`toggleCheckboxOnNote`, factored out of `applyCheckboxToggle` and
   shared with the new `toggleProjectDetailTask`).
+- Editor: line-wise yank/delete/paste, body only. `Ctrl+L` is a leader —
+  the next key runs one op (`y` yank, `d` delete/cut, `p` paste the
+  register below the cursor line); anything else, including `Esc`,
+  cancels the chord and discards that key instead of typing it into the
+  note. Direct `Ctrl+Y`/`Ctrl+D`/`Ctrl+P` bindings (the original
+  suggestion) turned out to already be taken — Redo, Quit-alias, and
+  Pane-Picker/cursor-up respectively — so the user picked the leader
+  chord instead, the only free key. The register lives for the editor
+  session only (reset on close, no cross-note carry). Mutates the same
+  `bubbles/textarea` value the normal save path commits, so a deleted
+  line is `Ctrl+Z`-recoverable like any other edit — no separate undo
+  plumbing needed. The chord interception had to move up to `editPane`'s
+  outer key switch (mirroring the existing link/project-suggestion
+  blocks), not inside `updateBody` where it was first written: the outer
+  switch's own unconditional `"esc"` case (cancels the whole editor)
+  would otherwise steal Escape before a pending chord ever saw it,
+  turning "Ctrl+L then Esc" (abort just the chord) into closing the
+  editor. Issue #10. `internal/tui/editor.go` (`lineOpPending`,
+  `lineRegister`, `yankCurrentLine`, `deleteCurrentLine`,
+  `pasteLineBelow`, `setCursorLine`).
 
 ### Verify
 - `go test ./...` — clean.
@@ -406,11 +426,25 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   debugging this same manual pass, the pre-existing `ta.Update`-before-
   `Focus` no-op described above — confirmed via a scratch test showing
   `Ctrl+Home` had no effect until reordered.
+- `internal/tui/tui_test.go` (#10): `TestHeadlessLineOpsYankAndPaste`,
+  `TestHeadlessLineOpsDeleteThenUndo`,
+  `TestHeadlessLineOpsDeleteLastLineClampsCursor`,
+  `TestHeadlessLineOpsPasteWithEmptyRegisterIsNoop`,
+  `TestHeadlessLineOpsAbortOnUnrecognizedKeyDiscardsIt` (covers the
+  Esc-aborts-chord-not-editor case specifically),
+  `TestHeadlessLineOpsChordOnlyInBody`.
+- Manual (tmux, including the explicit "does a terminal swallow Ctrl+L"
+  check the issue called out): typed three lines, `Ctrl+L y` on the
+  last — no character inserted, confirming the key was consumed, not
+  typed; `Ctrl+L p` duplicated it; `Ctrl+L d` on a middle line removed
+  it; `Ctrl+S` — the saved file on disk matched exactly; `Ctrl+Z` reverted
+  the whole session's edits. Confirmed `Ctrl+L` while a header field
+  (Project) was focused did nothing — the key fell through to that
+  field's own input instead.
 
 Remaining backlog tracked as GitHub issues (repo `ruttkowa/pkmcli`):
 soft-delete/trash (#1), text selection + copy/paste (#2), hotkey-bar
-grouping (#3), line-wise editor operations (#10), GitLab Issues
-integration (#15).
+grouping (#3), GitLab Issues integration (#15).
 
 ## [0.1.0] - 2026-07-08
 

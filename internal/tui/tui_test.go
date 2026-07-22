@@ -2779,6 +2779,183 @@ func TestHeadlessBackspaceClosingBracketPairDismissesLinkSuggest(t *testing.T) {
 	}
 }
 
+// TestHeadlessLineOpsYankAndPaste covers #10's yank/paste: yanking must not
+// mutate the buffer, and pasting the register below the cursor line must
+// duplicate it.
+func TestHeadlessLineOpsYankAndPaste(t *testing.T) {
+	m := setupTUI(t)
+	m = step(t, m, key("enter"), "open note")
+	m = step(t, m, key("e"), "open editor")
+
+	m = typeString(t, m, "first line\nsecond line") // cursor ends on "second line"
+
+	m = step(t, m, tea.KeyMsg{Type: tea.KeyCtrlL}, "ctrl+l (line-op leader)")
+	m = step(t, m, key("y"), "y (yank current line)")
+	if got := m.splits[m.activeSplit].editor.lineRegister; got != "second line" {
+		t.Fatalf("lineRegister = %q, want %q", got, "second line")
+	}
+	if got := m.splits[m.activeSplit].editor.ta.Value(); got != "first line\nsecond line" {
+		t.Fatalf("yank must not mutate the buffer, got %q", got)
+	}
+	if got := m.statusMsg; got != "line yanked" {
+		t.Errorf("statusMsg = %q, want %q", got, "line yanked")
+	}
+
+	m = step(t, m, tea.KeyMsg{Type: tea.KeyCtrlL}, "ctrl+l (line-op leader)")
+	m = step(t, m, key("p"), "p (paste below cursor)")
+	want := "first line\nsecond line\nsecond line"
+	if got := m.splits[m.activeSplit].editor.ta.Value(); got != want {
+		t.Fatalf("body after paste = %q, want %q", got, want)
+	}
+}
+
+// TestHeadlessLineOpsDeleteThenUndo covers #10's delete: the line must
+// leave the buffer immediately, and — because the mutation goes through the
+// same textarea value the normal save path commits — Ctrl+Z must recover it
+// like any other edit.
+func TestHeadlessLineOpsDeleteThenUndo(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("Delete Then Undo")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	n.Body = "keep me\ndelete me"
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+	title := n.Title
+
+	m.openOrCreateNote(title)
+	m = step(t, m, key("e"), "open editor")
+
+	// Move to the second line ("delete me") — the editor opens at line 0.
+	m = step(t, m, tea.KeyMsg{Type: tea.KeyDown}, "down (to second line)")
+
+	m = step(t, m, tea.KeyMsg{Type: tea.KeyCtrlL}, "ctrl+l (line-op leader)")
+	m = step(t, m, key("d"), "d (delete current line)")
+	if got := m.splits[m.activeSplit].editor.ta.Value(); got != "keep me" {
+		t.Fatalf("body after delete = %q, want %q", got, "keep me")
+	}
+	if got := m.splits[m.activeSplit].editor.lineRegister; got != "delete me" {
+		t.Errorf("lineRegister after delete = %q, want %q", got, "delete me")
+	}
+
+	m = step(t, m, tea.KeyMsg{Type: tea.KeyCtrlS}, "ctrl+s (save)")
+	saved, err := m.vault.FindByTitle(title)
+	if err != nil {
+		t.Fatalf("FindByTitle: %v", err)
+	}
+	if strings.Contains(saved.Body, "delete me") {
+		t.Fatalf("saved body still contains the deleted line: %q", saved.Body)
+	}
+
+	m.handleUndo()
+	restored, err := m.vault.FindByTitle(title)
+	if err != nil {
+		t.Fatalf("FindByTitle after undo: %v", err)
+	}
+	if !strings.Contains(restored.Body, "delete me") {
+		t.Errorf("expected undo to restore the deleted line, body = %q", restored.Body)
+	}
+}
+
+// TestHeadlessLineOpsDeleteLastLineClampsCursor covers #10's explicit
+// out-of-range trap: deleting the only/last line must not leave the cursor
+// past the end of a now-shorter (or empty) buffer.
+func TestHeadlessLineOpsDeleteLastLineClampsCursor(t *testing.T) {
+	m := setupTUI(t)
+	m = step(t, m, key("enter"), "open note")
+	m = step(t, m, key("e"), "open editor")
+	m = typeString(t, m, "only line")
+
+	m = step(t, m, tea.KeyMsg{Type: tea.KeyCtrlL}, "ctrl+l (line-op leader)")
+	m = step(t, m, key("d"), "d (delete the only line)")
+
+	sp := m.splits[m.activeSplit]
+	if got := sp.editor.ta.Value(); got != "" {
+		t.Errorf("body after deleting the only line = %q, want empty", got)
+	}
+	if line := sp.editor.ta.Line(); line != 0 {
+		t.Errorf("cursor line after deleting the only line = %d, want 0", line)
+	}
+}
+
+// TestHeadlessLineOpsPasteWithEmptyRegisterIsNoop covers #10's explicit
+// empty-register case: paste before any yank/delete must not touch the
+// buffer.
+func TestHeadlessLineOpsPasteWithEmptyRegisterIsNoop(t *testing.T) {
+	m := setupTUI(t)
+	m = step(t, m, key("enter"), "open note")
+	m = step(t, m, key("e"), "open editor")
+	m = typeString(t, m, "only line")
+
+	before := m.splits[m.activeSplit].editor.ta.Value()
+	m = step(t, m, tea.KeyMsg{Type: tea.KeyCtrlL}, "ctrl+l (line-op leader)")
+	m = step(t, m, key("p"), "p (paste, empty register)")
+	if got := m.splits[m.activeSplit].editor.ta.Value(); got != before {
+		t.Errorf("paste with empty register mutated the buffer: got %q, want unchanged %q", got, before)
+	}
+	if got := m.statusMsg; got != "nothing to paste" {
+		t.Errorf("statusMsg = %q, want %q", got, "nothing to paste")
+	}
+}
+
+// TestHeadlessLineOpsAbortOnUnrecognizedKeyDiscardsIt covers #10's abort
+// case: any key other than y/d/p after Ctrl+L cancels the chord and is
+// discarded — not typed into the buffer. Esc specifically must abort the
+// *chord*, not the editor: the outer key switch's own "esc" case (cancel
+// the whole editor) intercepts before updateBody ever runs, so the chord
+// must be handled earlier in update() or "Ctrl+L then Esc" would silently
+// close the editor instead of just cancelling the pending operation.
+func TestHeadlessLineOpsAbortOnUnrecognizedKeyDiscardsIt(t *testing.T) {
+	m := setupTUI(t)
+	m = step(t, m, key("enter"), "open note")
+	m = step(t, m, key("e"), "open editor")
+	m = typeString(t, m, "hello")
+
+	before := m.splits[m.activeSplit].editor.ta.Value()
+	m = step(t, m, tea.KeyMsg{Type: tea.KeyCtrlL}, "ctrl+l (line-op leader)")
+	if !m.splits[m.activeSplit].editor.lineOpPending {
+		t.Fatal("expected lineOpPending after Ctrl+L")
+	}
+	m = step(t, m, key("a"), "a (not y/d/p — should abort and be discarded)")
+	if m.splits[m.activeSplit].editor.lineOpPending {
+		t.Error("expected lineOpPending cleared after any key")
+	}
+	if got := m.splits[m.activeSplit].editor.ta.Value(); got != before {
+		t.Errorf("aborted chord inserted text: got %q, want unchanged %q", got, before)
+	}
+
+	m = step(t, m, tea.KeyMsg{Type: tea.KeyCtrlL}, "ctrl+l (line-op leader)")
+	m = step(t, m, key("esc"), "esc (abort the chord, not the editor)")
+	if m.splits[m.activeSplit].editor.lineOpPending {
+		t.Error("expected lineOpPending cleared after esc")
+	}
+	if m.splits[m.activeSplit].activeView != viewEdit {
+		t.Errorf("expected editor to stay open — esc during a pending chord should abort the chord, not cancel the editor, got activeView=%v", m.splits[m.activeSplit].activeView)
+	}
+}
+
+// TestHeadlessLineOpsChordOnlyInBody covers #10's scope constraint: the
+// Ctrl+L chord must not activate in the editor's header fields (title
+// state/tags/project) or reach the note viewer.
+func TestHeadlessLineOpsChordOnlyInBody(t *testing.T) {
+	m := setupTUI(t)
+	m = step(t, m, key("enter"), "open note")
+	m = step(t, m, key("e"), "open editor")
+	m = step(t, m, key("shift+tab"), "shift+tab (body → project field)")
+	if m.splits[m.activeSplit].editor.focused != fldProject {
+		t.Fatalf("expected focus on fldProject, got %v", m.splits[m.activeSplit].editor.focused)
+	}
+
+	m = step(t, m, tea.KeyMsg{Type: tea.KeyCtrlL}, "ctrl+l while a header field is focused")
+	if m.splits[m.activeSplit].editor.lineOpPending {
+		t.Error("expected Ctrl+L to be a no-op outside the body field")
+	}
+}
+
 // TestHeadlessEditorAssignsProject guards issue #25: assigning a project via
 // the editor's Project field must do everything :add project (cmdProject)
 // does — force State to StateProjects, record attach history, and reveal the

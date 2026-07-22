@@ -390,6 +390,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				var cmd tea.Cmd
 				sp.editor, cmd = sp.editor.update(msg)
 				cmds = append(cmds, cmd)
+				if sp.editor.lineOpStatus != "" {
+					m.statusMsg = sp.editor.lineOpStatus
+					sp.editor.lineOpStatus = ""
+				}
 				if sp.editor.saved {
 					m.commitEditorDraft(sp)
 				} else if sp.editor.cancelled {

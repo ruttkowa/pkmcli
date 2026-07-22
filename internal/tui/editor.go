@@ -62,6 +62,14 @@ type editPane struct {
 	projSuggestActive bool
 	projSuggestSel    int
 	projSuggestList   []string
+
+	// Line-wise operations (#10): Ctrl+L is a leader — the next key (y/d/p)
+	// runs the operation; anything else aborts, discarding that key rather
+	// than inserting it. lineRegister lives for this editor session only,
+	// reset (with the rest of editPane) when the pane closes.
+	lineOpPending bool
+	lineRegister  string
+	lineOpStatus  string // one-shot feedback ("line yanked" etc.); model.go copies it to statusMsg and clears it
 }
 
 func newEditPane(n *vault.Note, width, height int, notes []*vault.Note, projectNames []string, lineNumbers bool, saveKey string, startLine int) (editPane, tea.Cmd) {
@@ -199,6 +207,9 @@ func (e editPane) footerText(width, totalLines int) string {
 	saveLabel := "Last saved: " + saved
 	counts := fmt.Sprintf("Words: %d  Lines: %d", e.wordCount, totalLines)
 	hint := "Tab: cycle fields"
+	if e.lineOpPending {
+		hint = "line: y yank · d delete · p paste"
+	}
 
 	candidates := []string{
 		build(unsavedFull, saveLabel, counts, hint),
@@ -365,6 +376,36 @@ func (e editPane) update(msg tea.Msg) (editPane, tea.Cmd) {
 			}
 		}
 
+		// #10: line-wise yank/delete/paste, Ctrl+L leader chord. Must
+		// intercept before the global switch below, same reason as the two
+		// suggestion blocks above — that switch's own "esc" case (cancels
+		// the whole editor) and saveKey case would otherwise steal the
+		// chord's next key before this ever saw it, e.g. turning "Ctrl+L
+		// then Esc" (abort the chord) into "cancel the editor".
+		if e.lineOpPending && e.focused == fldBody {
+			e.lineOpPending = false
+			switch km.String() {
+			case "y":
+				e = e.yankCurrentLine()
+				e.lineOpStatus = "line yanked"
+			case "d":
+				e = e.deleteCurrentLine()
+				e.lineOpStatus = "line deleted"
+			case "p":
+				if e.lineRegister == "" {
+					e.lineOpStatus = "nothing to paste"
+				} else {
+					e = e.pasteLineBelow()
+					e.lineOpStatus = "line pasted"
+				}
+			}
+			return e, nil
+		}
+		if km.String() == "ctrl+l" && e.focused == fldBody {
+			e.lineOpPending = true
+			return e, nil
+		}
+
 		switch km.String() {
 		case e.saveKey:
 			e.saved = true
@@ -504,6 +545,83 @@ func (e editPane) updateBody(km tea.KeyMsg) (editPane, tea.Cmd) {
 	e.wordCount = countWords(e.ta.Value())
 	e = e.refreshLinkSuggest()
 	return e, cmd
+}
+
+// yankCurrentLine copies the line the cursor is on into lineRegister. No
+// buffer mutation, so the cursor is untouched.
+func (e editPane) yankCurrentLine() editPane {
+	lines := strings.Split(e.ta.Value(), "\n")
+	idx := e.ta.Line()
+	if idx < 0 || idx >= len(lines) {
+		return e
+	}
+	e.lineRegister = lines[idx]
+	return e
+}
+
+// deleteCurrentLine cuts the line the cursor is on into lineRegister and
+// removes it from the buffer, landing the cursor at the start of whatever
+// line now occupies that index (clamped if the last line was deleted).
+func (e editPane) deleteCurrentLine() editPane {
+	lines := strings.Split(e.ta.Value(), "\n")
+	idx := e.ta.Line()
+	if idx < 0 || idx >= len(lines) {
+		return e
+	}
+	e.lineRegister = lines[idx]
+	lines = append(lines[:idx], lines[idx+1:]...)
+	if len(lines) == 0 {
+		lines = []string{""} // never leave the textarea with zero lines
+	}
+	e.ta.SetValue(strings.Join(lines, "\n"))
+	e = e.setCursorLine(idx, 0)
+	e.wordCount = countWords(e.ta.Value())
+	return e
+}
+
+// pasteLineBelow inserts lineRegister as a new line directly below the
+// cursor line (vim's "p"), landing the cursor on it.
+func (e editPane) pasteLineBelow() editPane {
+	lines := strings.Split(e.ta.Value(), "\n")
+	idx := e.ta.Line()
+	if idx < 0 {
+		idx = 0
+	}
+	insertAt := idx + 1
+	if insertAt > len(lines) {
+		insertAt = len(lines)
+	}
+	newLines := make([]string, 0, len(lines)+1)
+	newLines = append(newLines, lines[:insertAt]...)
+	newLines = append(newLines, e.lineRegister)
+	newLines = append(newLines, lines[insertAt:]...)
+	e.ta.SetValue(strings.Join(newLines, "\n"))
+	e = e.setCursorLine(insertAt, 0)
+	e.wordCount = countWords(e.ta.Value())
+	return e
+}
+
+// setCursorLine repositions e.ta's cursor to a specific logical line and
+// column. SetValue always leaves the cursor at the document's end (it's
+// Reset+InsertString under the hood), so every line op that mutates the
+// buffer must restore a real position afterward — clamped into range so
+// deleting the last line can't leave it out of bounds. Same CursorDown-
+// loops-to-target-line technique as #22's newEditPane (CursorDown moves by
+// *display* row, not logical line, so a wrapped line takes more than one
+// call to cross).
+func (e editPane) setCursorLine(line, col int) editPane {
+	if line >= e.ta.LineCount() {
+		line = e.ta.LineCount() - 1
+	}
+	if line < 0 {
+		line = 0
+	}
+	e.ta, _ = e.ta.Update(tea.KeyMsg{Type: tea.KeyCtrlHome})
+	for e.ta.Line() < line {
+		e.ta.CursorDown()
+	}
+	e.ta.SetCursor(col)
+	return e
 }
 
 // autoPairs maps each auto-closed opener to its closer — the same set

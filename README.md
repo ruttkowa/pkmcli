@@ -199,6 +199,17 @@ In the body field:
 | `[`, `(`, `` ` `` | Auto-pairs `[]`, `()`, `` `` `` with the cursor placed between |
 | `]`, `)`, `` ` `` | Skips over the matching closer if the cursor is right before one |
 | `Enter` | Continues `- `, `- [ ] `/`- [x] `, `* `, and numbered (`1.` → `2.`) lists. Pressing it again on a marker with no text after it (i.e. right after the previous Enter auto-added one) clears that marker instead of adding another — the way to break out of a list. (This app's Bubble Tea/terminal stack can't distinguish `Shift+Enter` from plain `Enter`, so this empty-marker break-out stands in for it.) |
+| `Ctrl+L` | Line-op leader (see below) |
+
+**Line operations.** `Ctrl+L` is a leader — the very next key runs one operation, and anything else (including `Esc`) cancels the chord without typing that key into the note:
+
+| Chord | Action |
+|---|---|
+| `Ctrl+L` `y` | Yank (copy) the current line |
+| `Ctrl+L` `d` | Delete (cut) the current line |
+| `Ctrl+L` `p` | Paste the last yanked/deleted line below the cursor |
+
+The register holds one line for the current editor session only (reset when the editor closes — it doesn't carry across notes). Pasting with an empty register is a no-op. A deleted line is `Ctrl+Z`-recoverable the same way any other save is, since the mutation goes through the normal draft body rather than a side channel. Direct `Ctrl+Y`/`Ctrl+D`/`Ctrl+P` bindings were considered and rejected — all three are already taken (Redo, Quit-alias, Pane Picker/cursor-up).
 
 Typing inside an unclosed `[[fragment]]` opens a link-autosuggest dropdown:
 
