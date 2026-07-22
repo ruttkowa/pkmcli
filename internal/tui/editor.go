@@ -64,7 +64,7 @@ type editPane struct {
 	projSuggestList   []string
 }
 
-func newEditPane(n *vault.Note, width, height int, notes []*vault.Note, projectNames []string, lineNumbers bool, saveKey string) (editPane, tea.Cmd) {
+func newEditPane(n *vault.Note, width, height int, notes []*vault.Note, projectNames []string, lineNumbers bool, saveKey string, startLine int) (editPane, tea.Cmd) {
 	si := 0
 	for i, s := range vault.AllStates {
 		if s == n.State {
@@ -100,8 +100,29 @@ func newEditPane(n *vault.Note, width, height int, notes []*vault.Note, projectN
 	ta.SetHeight(bodyH)
 	applyEditTheme(&ta)
 	ta.SetValue(n.Body)
-	ta, _ = ta.Update(tea.KeyMsg{Type: tea.KeyCtrlHome})
+	// Focus must happen before any Update() call below — textarea.Update
+	// no-ops entirely while unfocused (m.focus check), so the Ctrl+Home
+	// reset silently did nothing when called beforehand (a latent bug
+	// predating #22: SetValue leaves the cursor at the document's end, and
+	// with Focus called after Update, the editor always opened there).
 	focusCmd := ta.Focus()
+	ta, _ = ta.Update(tea.KeyMsg{Type: tea.KeyCtrlHome})
+	// #22: resume editing where the viewer's cursor was, not always at the
+	// top. CursorDown moves by *display* row, not logical line, so a
+	// word-wrapped line takes more than one call to cross — loop on Line()
+	// reaching the target rather than counting calls. Clamping startLine
+	// into range first guarantees CursorDown (a no-op past the last line)
+	// can always reach it, so this can't spin forever.
+	if startLine >= ta.LineCount() {
+		startLine = ta.LineCount() - 1
+	}
+	if startLine < 0 {
+		startLine = 0
+	}
+	for ta.Line() < startLine {
+		ta.CursorDown()
+	}
+	ta.SetCursor(0)
 
 	return editPane{
 		note:          n,

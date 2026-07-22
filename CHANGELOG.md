@@ -177,6 +177,42 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   11 rows over budget at width 30) — a different bug, its content pane
   isn't clipped to the layout's content height at all. Not a mouse-click
   issue and not touched here.
+- The cursor no longer jumps to the top/bottom of the note when switching
+  between view and edit mode. Two independent bugs, both fixed:
+  - **Edit → View (the reported "jump on save"):** `commitEditorDraft`
+    called `viewer.withNote` (which resets `cursorRow` to 0) without ever
+    restoring a position afterward, unlike the checkbox-toggle path
+    (`applyCheckboxToggle`), which always has. Now reads the textarea's
+    cursor line before committing and maps it to the freshly re-rendered
+    body's matching line.
+  - **View → Edit (found while fixing the above — a second, independent
+    root cause of the same "jump" complaint):** `newEditPane` called
+    `ta.Update(KeyCtrlHome)` *before* `ta.Focus()`, but
+    `bubbles/textarea.Update` is a no-op while unfocused — so the
+    intended "reset to the top" never actually ran, and the editor always
+    opened with the cursor wherever `SetValue` had left it (the
+    document's end). Reordering to focus-then-reset fixed the no-op, and
+    the editor now also starts at the raw line the viewer's cursor was
+    on, not the top.
+
+  Both directions needed a general rendered-line → raw-line map, which
+  didn't exist before (`checkboxLines`/`headingLines` only cover their
+  own element types). Line-level and best-effort by design, not
+  character-exact — glamour reflow means most rendered lines have no
+  exact raw counterpart (word-wrap, list indentation, link aliasing all
+  change line count/content), so a per-source-line sentinel would either
+  collide with itself across a wrapped paragraph or require placement
+  before syntax-critical leading characters (breaking list/blockquote/hr
+  detection). Resolved by marking only the *first* raw line of each
+  paragraph-like block (reusing the existing PUA-sentinel technique,
+  placed only on lines proven safe to prefix — unindented, no leading
+  `#`/`-`/`*`/`+`/`>`/`|`/`` ` ``/`~`/ordered-list-marker), and
+  forward-filling every rendered line in between from the nearest
+  preceding anchor — the same fallback the qualification spec authorized
+  for lines with no exact rendered counterpart. Issue #22.
+  `internal/tui/viewer.go` (`lineMark`, `lineRef`, `ordinaryLineSafe`,
+  `rawLines` field, `rawLineAt`, `renderedLineForRaw`), `internal/tui/model.go`
+  (`commitEditorDraft`), `internal/tui/editor.go` (`newEditPane`).
 
 ### Added (issue batch, 2026-07-21)
 - `install.sh` — builds `pkm` and installs it to a directory on `PATH`
@@ -351,11 +387,30 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   on a task opened its source note in the main pane. A project with no
   tasks rendered "(no tasks)" with no panic and `j`/`k`/`Space`/`Enter`
   all safe no-ops.
+- `internal/tui/tui_test.go` (#22): `TestViewerRawLineMapNotIdentityAfterWrap`
+  (the map's core requirement — a rendered line after a wrapped
+  paragraph, and a checkbox line further down, both resolve to their
+  correct, non-identity raw lines), `TestHeadlessViewEditViewRoundTripPreservesRawLine`
+  (view→edit→view on a wrapped note lands the textarea cursor on the
+  right raw line, and returns the viewer cursor to it after save),
+  `TestHeadlessEditorSaveDoesNotJumpViewerCursorToTop` (the minimal
+  regression case for the literal reported complaint).
+- Manual (tmux): a 40-section, ~240-line note, each section a wrapping
+  paragraph + a checkbox; scrolled deep in with the block cursor (`↓` —
+  not `j`, which only scrolls), pressed `e` — the editor's viewport
+  opened already scrolled to the matching raw lines, not the top;
+  `Ctrl+S` with no changes — viewer returned to the same scroll position
+  (8%), not the top; repeated with an actual edit (typed a word at the
+  cursor position, confirmed it landed on the intended line) — save
+  still returned to the same position, not the top. Also caught, while
+  debugging this same manual pass, the pre-existing `ta.Update`-before-
+  `Focus` no-op described above — confirmed via a scratch test showing
+  `Ctrl+Home` had no effect until reordered.
 
 Remaining backlog tracked as GitHub issues (repo `ruttkowa/pkmcli`):
 soft-delete/trash (#1), text selection + copy/paste (#2), hotkey-bar
-grouping (#3), line-wise editor operations (#10), remembered cursor
-position (#22), GitLab Issues integration (#15).
+grouping (#3), line-wise editor operations (#10), GitLab Issues
+integration (#15).
 
 ## [0.1.0] - 2026-07-08
 

@@ -177,6 +177,8 @@ The note-list view (search results, section browsing).
 
 The bottom row of the pane is a fixed footer showing `Last saved: HH:MM:SS` (from the note's `updated` frontmatter field) alongside the scroll percentage — not shown in the global hotkey bar.
 
+**Cursor position carries across View ↔ Edit.** Pressing `e` opens the editor at the raw line the block cursor was on (not always the top); saving or Esc-closing the editor returns the block cursor to that same line (not the top). This is line-level and best-effort, not character-exact: glamour reflows markdown into a different line layout than the raw file (word-wrap, list indentation, link aliasing), so there's no exact inverse for every rendered position — landing on the correct *line* is the guarantee, not a specific column.
+
 **Foldable headings.** Every heading shows a `▼`/`▶` glyph. Collapsing one (`←`, or a click, on the block cursor's heading line) hides everything until the next heading of the same or higher level — nested sub-headings inside a collapsed section stay hidden too, regardless of their own fold state. `→` expands it again, or click it a second time. Fold state is view-only: it's per-note, resets when you switch notes, and never touches the file on disk.
 
 ### Editor

@@ -172,6 +172,7 @@ func (m *Model) resizeOpenEditors(l layout) {
 // user's edits.
 func (m *Model) commitEditorDraft(sp *splitPane) {
 	n := sp.editor.note
+	editRawLine := sp.editor.ta.Line() // #22: where the draft's cursor was, for the return to view mode
 	newProject := strings.TrimSpace(sp.editor.projInput.Value())
 	oldProject := n.Project
 
@@ -224,6 +225,11 @@ func (m *Model) commitEditorDraft(sp *splitPane) {
 		sp.viewer = sp.viewer.withNote(n)
 		l := m.computeLayout()
 		sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+		// #22: land back on the rendered line the draft's cursor was on,
+		// instead of withNote's reset to the top.
+		sp.viewer.cursorRow = sp.viewer.renderedLineForRaw(editRawLine)
+		sp.viewer.cursorCol = 0
+		sp.viewer = sp.viewer.followCursor(l.contentHeight)
 	}
 	sp.editor = editPane{}
 	sp.activeView = viewNote
@@ -607,8 +613,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			sp := &m.splits[m.activeSplit]
 			if sp.activeView == viewNote && sp.viewer.note != nil {
 				l := m.computeLayout()
+				startLine := sp.viewer.rawLineAt(sp.viewer.cursorRow) // #22: resume at the same position, not line 0
 				var cmd tea.Cmd
-				sp.editor, cmd = newEditPane(sp.viewer.note, l.paneWidth, l.contentHeight, sortedNotes(m.vault), m.vault.Projects.ActiveNames(), m.cfg.LineNumbers, m.cfg.Keymap.Save)
+				sp.editor, cmd = newEditPane(sp.viewer.note, l.paneWidth, l.contentHeight, sortedNotes(m.vault), m.vault.Projects.ActiveNames(), m.cfg.LineNumbers, m.cfg.Keymap.Save, startLine)
 				sp.activeView = viewEdit
 				m.activePane = paneMain
 				return m, cmd

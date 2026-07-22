@@ -53,6 +53,14 @@ type viewerModel struct {
 	codeSpans       []codeSpan     // fenced code blocks, in rendered-line order
 	headingLines    map[int]int    // body-relative rendered line index → raw heading line index (#20)
 
+	// rawLines is the general rendered→raw line map (#22), used to carry the
+	// cursor position across the View/Edit boundary. Best-effort and
+	// line-level only (see rawLineAt/renderedLineForRaw) — glamour's
+	// word-wrap means most rendered lines have no exact raw counterpart, so
+	// this only anchors the *start* of each heading/checkbox/plain-paragraph
+	// block and forward-fills the rest, same technique as headingLines.
+	rawLines map[int]int
+
 	// folded holds this note's collapsed headings (#20), keyed by raw body
 	// line index — view-only, never persisted or written to the note. Reset
 	// on withNote (switching notes), but explicitly preserved by the two
@@ -96,6 +104,7 @@ func (m viewerModel) withNote(n *vault.Note) viewerModel {
 	m.checkboxLines = nil
 	m.codeSpans = nil
 	m.headingLines = nil
+	m.rawLines = nil
 	m.folded = nil
 	m.cursorRow = 0
 	m.cursorCol = 0
@@ -137,10 +146,10 @@ func (m viewerModel) preRender(width int, titles map[string]bool) viewerModel {
 	}
 
 	// Render scrollable body.
-	body, linkRefs, checkboxRefs, codeRefs, headingRefs := buildBodyMd(m.note, titles, m.folded)
+	body, linkRefs, checkboxRefs, codeRefs, headingRefs, lineRefs := buildBodyMd(m.note, titles, m.folded)
 	if out, berr := r.Render(body); berr == nil && out != "" {
 		out, m.linkLines = processRenderedLinks(out, linkRefs)
-		m.rendered, m.checkboxLines, m.codeSpans, m.headingLines = processCheckboxesAndCode(out, checkboxRefs, codeRefs, headingRefs)
+		m.rendered, m.checkboxLines, m.codeSpans, m.headingLines, m.rawLines = processCheckboxesAndCode(out, checkboxRefs, codeRefs, headingRefs, lineRefs)
 	} else {
 		m.rendered = m.note.Body
 	}
@@ -211,6 +220,45 @@ func (m viewerModel) clampScroll() viewerModel {
 		m.scrollOff = 0
 	}
 	return m
+}
+
+// rawLineAt returns the raw body-line index the given rendered body line
+// most likely corresponds to (#22, best-effort, line-level — see rawLines'
+// doc comment). Falls back to the nearest preceding mapped rendered line,
+// then to 0 if nothing is mapped yet (e.g. cursor sits before the first
+// anchor).
+func (m viewerModel) rawLineAt(renderedLine int) int {
+	for i := renderedLine; i >= 0; i-- {
+		if raw, ok := m.rawLines[i]; ok {
+			return raw
+		}
+	}
+	return 0
+}
+
+// renderedLineForRaw inverts rawLines: the first rendered line whose raw
+// counterpart is rawLine, or — if that raw line was never its own anchor
+// (a wrapped/merged continuation line within a block) — the rendered start
+// of the nearest preceding raw line that was (#22's explicit fallback).
+// rawLines is monotonically non-decreasing in rendered-line order (raw
+// lines are scanned top-to-bottom), so a single forward pass suffices.
+func (m viewerModel) renderedLineForRaw(rawLine int) int {
+	lines := strings.Split(m.rendered, "\n")
+	best := 0
+	for i := range lines {
+		raw, ok := m.rawLines[i]
+		if !ok {
+			continue
+		}
+		if raw == rawLine {
+			return i
+		}
+		if raw > rawLine {
+			break
+		}
+		best = i
+	}
+	return best
 }
 
 // clampCol bounds col to a line's display width (0..width, where width itself
@@ -645,11 +693,11 @@ func buildHeaderMd(n *vault.Note) string {
 // the note's current per-heading fold state (#20): lines hidden by a
 // collapsed heading are dropped from the markdown handed to glamour
 // entirely, so they never occupy a rendered line.
-func buildBodyMd(n *vault.Note, titles map[string]bool, folded map[int]bool) (string, []linkRef, []checkboxRef, []codeRef, []headingRef) {
+func buildBodyMd(n *vault.Note, titles map[string]bool, folded map[int]bool) (string, []linkRef, []checkboxRef, []codeRef, []headingRef, []lineRef) {
 	hidden := hiddenLinesForFold(strings.Split(n.Body, "\n"), folded)
-	annotated, checkboxRefs, codeRefs, headingRefs := annotateInteractive(n.Body, hidden, folded)
+	annotated, checkboxRefs, codeRefs, headingRefs, lineRefs := annotateInteractive(n.Body, hidden, folded)
 	body, linkRefs := substituteLinks(annotated, titles)
-	return body, linkRefs, checkboxRefs, codeRefs, headingRefs
+	return body, linkRefs, checkboxRefs, codeRefs, headingRefs, lineRefs
 }
 
 // checkboxRef records a task-list item found in the raw body, in parse order.
@@ -666,6 +714,40 @@ type codeRef struct {
 // headingRef records a heading line found in the raw body, in parse order.
 type headingRef struct {
 	rawLine int // index into the raw body's lines
+}
+
+// lineRef records the start of an ordinary (plain-paragraph) block found in
+// the raw body, in parse order (#22's general rendered→raw map).
+type lineRef struct {
+	rawLine int // index into the raw body's lines
+}
+
+// ordinaryLineSafe reports whether it's safe to prepend lineMark to a raw
+// line without changing how goldmark parses it (#22). True only for a
+// non-blank, unindented line with no leading syntax character of its own —
+// a plain-paragraph line. Every proven-safe sentinel placement elsewhere in
+// this file goes *after* a line's syntactic prefix (cbMark after "] ",
+// headingMark after "# "); a plain paragraph has no such prefix to place it
+// after, so it's marked at position 0 instead. Indented lines, list items,
+// blockquotes, tables, fences, and thematic breaks are deliberately left
+// unmarked — a leading sentinel would corrupt their block-type detection —
+// and fall back to the nearest preceding mapped line via rawLineAt.
+func ordinaryLineSafe(line string) bool {
+	if line == "" || line != strings.TrimLeft(line, " \t") {
+		return false
+	}
+	switch line[0] {
+	case '#', '-', '*', '+', '>', '|', '`', '~':
+		return false
+	}
+	j := 0
+	for j < len(line) && line[j] >= '0' && line[j] <= '9' {
+		j++
+	}
+	if j > 0 && j < len(line) && (line[j] == '.' || line[j] == ')') {
+		return false // ordered-list marker, e.g. "1. " or "2) "
+	}
+	return true
 }
 
 // headingLevel returns a markdown heading line's level (1-6), the count of
@@ -732,6 +814,7 @@ const (
 	codeOpen    = "" // first content line of a fenced code block
 	codeClose   = "" // last content line of a fenced code block
 	headingMark = "" // heading line marker, for fold click/keyboard targeting
+	lineMark    = "" // ordinary-paragraph-block start marker (#22)
 )
 
 // annotateInteractive scans the raw body line-by-line for checkbox items and
@@ -741,11 +824,12 @@ const (
 // sentinel travels through rendering as literal text and can be found again
 // (verified empirically, including inside chroma-highlighted code). Must run
 // before substituteLinks, which uses a different sentinel range.
-func annotateInteractive(body string, hidden map[int]bool, folded map[int]bool) (string, []checkboxRef, []codeRef, []headingRef) {
+func annotateInteractive(body string, hidden map[int]bool, folded map[int]bool) (string, []checkboxRef, []codeRef, []headingRef, []lineRef) {
 	lines := strings.Split(body, "\n")
 	var checkboxRefs []checkboxRef
 	var codeRefs []codeRef
 	var headingRefs []headingRef
+	var lineRefs []lineRef
 
 	inFence := false
 	fenceStart := 0
@@ -833,6 +917,20 @@ func annotateInteractive(body string, hidden map[int]bool, folded map[int]bool) 
 			}
 			continue
 		}
+		if ordinaryLineSafe(line) {
+			// #22: mark only the block's first raw line — glamour merges
+			// consecutive plain-paragraph raw lines into one reflowed block,
+			// so per-source-line rendered positions inside it aren't
+			// recoverable anyway (see ordinaryLineSafe's doc comment).
+			// Continuation lines fall back to this anchor via rawLineAt.
+			lines[i] = lineMark + line
+			lineRefs = append(lineRefs, lineRef{rawLine: i})
+			i++
+			for i < len(lines) && !hidden[i] && ordinaryLineSafe(lines[i]) {
+				i++
+			}
+			continue
+		}
 		i++
 	}
 	if len(hidden) > 0 {
@@ -843,23 +941,29 @@ func annotateInteractive(body string, hidden map[int]bool, folded map[int]bool) 
 			}
 			out = append(out, l)
 		}
-		return strings.Join(out, "\n"), checkboxRefs, codeRefs, headingRefs
+		return strings.Join(out, "\n"), checkboxRefs, codeRefs, headingRefs, lineRefs
 	}
-	return strings.Join(lines, "\n"), checkboxRefs, codeRefs, headingRefs
+	return strings.Join(lines, "\n"), checkboxRefs, codeRefs, headingRefs, lineRefs
 }
 
 // processCheckboxesAndCode strips checkbox/code sentinels from the rendered
 // body, building rendered-line maps back to the raw refs annotateInteractive
 // found. Sentinels are matched to refs in left-to-right parse order, the
 // same convention processRenderedLinks uses for links.
-func processCheckboxesAndCode(rendered string, checkboxRefs []checkboxRef, codeRefs []codeRef, headingRefs []headingRef) (string, map[int]int, []codeSpan, map[int]int) {
+func processCheckboxesAndCode(rendered string, checkboxRefs []checkboxRef, codeRefs []codeRef, headingRefs []headingRef, lineRefs []lineRef) (string, map[int]int, []codeSpan, map[int]int, map[int]int) {
 	lines := strings.Split(rendered, "\n")
 	checkboxLines := make(map[int]int)
 	headingLines := make(map[int]int)
+	rawLines := make(map[int]int)
 	var spans []codeSpan
 
-	cbIdx, codeIdx, headIdx := 0, 0, 0
+	cbIdx, codeIdx, headIdx, lineRefIdx := 0, 0, 0, 0
 	openCodeLine := -1
+	// curRaw is the #22 forward-fill pointer: the raw line of the most
+	// recent heading/checkbox/paragraph anchor seen so far, carried onto
+	// every rendered line (including word-wrapped continuations and
+	// glamour's own block-spacing blanks) until the next anchor updates it.
+	curRaw := -1
 	// dimUntilNextTask keeps dimming a finished task's word-wrapped
 	// continuation lines (#17): the cbMark sentinel only lands on a task's
 	// first rendered line, so without this a long done task read as grey
@@ -876,15 +980,25 @@ func processCheckboxesAndCode(rendered string, checkboxRefs []checkboxRef, codeR
 		if idx := strings.Index(line, headingMark); idx != -1 {
 			if headIdx < len(headingRefs) {
 				headingLines[lineIdx] = headingRefs[headIdx].rawLine
+				curRaw = headingRefs[headIdx].rawLine
 				headIdx++
 			}
 			line = line[:idx] + line[idx+len(headingMark):]
+		}
+
+		if idx := strings.Index(line, lineMark); idx != -1 {
+			if lineRefIdx < len(lineRefs) {
+				curRaw = lineRefs[lineRefIdx].rawLine
+				lineRefIdx++
+			}
+			line = line[:idx] + line[idx+len(lineMark):]
 		}
 
 		if idx := strings.Index(line, cbMark); idx != -1 {
 			finished := false
 			if cbIdx < len(checkboxRefs) {
 				checkboxLines[lineIdx] = checkboxRefs[cbIdx].rawLine
+				curRaw = checkboxRefs[cbIdx].rawLine
 				finished = checkboxRefs[cbIdx].checked
 				cbIdx++
 			}
@@ -920,9 +1034,12 @@ func processCheckboxesAndCode(rendered string, checkboxRefs []checkboxRef, codeR
 			}
 			openCodeLine = -1
 		}
+		if curRaw >= 0 {
+			rawLines[lineIdx] = curRaw
+		}
 		lines[lineIdx] = line
 	}
-	return strings.Join(lines, "\n"), checkboxLines, spans, headingLines
+	return strings.Join(lines, "\n"), checkboxLines, spans, headingLines, rawLines
 }
 
 // substituteLinks replaces [[Title|Alias]] / [[Title]] with glamour-ready markdown.

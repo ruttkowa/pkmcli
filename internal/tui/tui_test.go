@@ -859,6 +859,66 @@ func TestViewerCursorMovement(t *testing.T) {
 	}
 }
 
+// TestViewerRawLineMapNotIdentityAfterWrap covers #22's core requirement:
+// the general rendered→raw line map must not be an identity map once a
+// paragraph word-wraps — this is exactly where a naive `cursorRow ==
+// rawLine` approach silently drifts (see #22's qualification comment).
+func TestViewerRawLineMapNotIdentityAfterWrap(t *testing.T) {
+	n := note("1", "T")
+	longPara := strings.Repeat("supercalifragilistic ", 30)
+	// raw lines: 0 heading, 1 blank, 2 long paragraph, 3 blank, 4 wikilink,
+	// 5 blank, 6 checkbox, 7 trailing blank.
+	n.Body = "# Heading\n\n" + longPara + "\n\n[[Some Link]]\n\n- [ ] a task\n"
+	m := newViewer().withNote(n)
+	m = m.preRender(40, nil) // narrow width forces the paragraph to wrap
+
+	lines := strings.Split(m.rendered, "\n")
+	const paraRawLine = 2
+	firstParaRendered := m.renderedLineForRaw(paraRawLine)
+	if got := m.rawLineAt(firstParaRendered); got != paraRawLine {
+		t.Fatalf("rawLineAt(%d) = %d, want %d (paragraph's own anchor line)", firstParaRendered, got, paraRawLine)
+	}
+
+	continuationRendered := firstParaRendered + 1
+	if continuationRendered >= len(lines) {
+		t.Fatalf("test setup didn't produce a wrapped continuation line after rendered line %d (only %d rendered lines) — increase longPara", firstParaRendered, len(lines))
+	}
+	if continuationRendered == paraRawLine {
+		t.Fatalf("test setup didn't actually diverge from identity: rendered index %d == raw index %d", continuationRendered, paraRawLine)
+	}
+	if got := m.rawLineAt(continuationRendered); got != paraRawLine {
+		t.Errorf("rawLineAt(%d) (wrapped continuation of the paragraph) = %d, want it to still resolve to the paragraph's raw start %d, not identity", continuationRendered, got, paraRawLine)
+	}
+
+	if linkRendered, ok := firstKey(m.linkLines); ok {
+		if got := m.rawLineAt(linkRendered); got != 4 {
+			t.Errorf("rawLineAt(link rendered line %d) = %d, want 4", linkRendered, got)
+		}
+	}
+
+	checkboxRendered, ok := firstKey(m.checkboxLines)
+	if !ok {
+		t.Fatalf("expected a checkbox line in the rendered output")
+	}
+	const wantCheckboxRaw = 6
+	if m.checkboxLines[checkboxRendered] != wantCheckboxRaw {
+		t.Fatalf("test setup: checkboxLines[%d] = %d, want %d", checkboxRendered, m.checkboxLines[checkboxRendered], wantCheckboxRaw)
+	}
+	if got := m.rawLineAt(checkboxRendered); got != wantCheckboxRaw {
+		t.Errorf("rawLineAt(checkbox rendered line %d) = %d, want %d — general map must agree with checkboxLines, not fall back to an earlier anchor", checkboxRendered, got, wantCheckboxRaw)
+	}
+}
+
+// firstKey returns an arbitrary key from a map[int]string or map[int]int,
+// for tests that just need "the one line this note has" without caring
+// which iteration order Go picks.
+func firstKey[V any](m map[int]V) (int, bool) {
+	for k := range m {
+		return k, true
+	}
+	return 0, false
+}
+
 // TestHeadlessCursorActivateLink covers pressing Enter while the block
 // cursor sits on a wikilink: it should navigate to that note, the same as a
 // mouse click on the link.
@@ -1155,7 +1215,7 @@ func TestProcessCheckboxesAndCodeDimsWrappedContinuationLines(t *testing.T) {
 		{rawLine: 1, checked: false},
 	}
 
-	out, _, _, _ := processCheckboxesAndCode(rendered, refs, nil, nil)
+	out, _, _, _, _ := processCheckboxesAndCode(rendered, refs, nil, nil, nil)
 	outLines := strings.Split(out, "\n")
 
 	if outLines[0] == lines[0] {
@@ -1196,7 +1256,7 @@ func TestProcessCheckboxesAndCodeUnfinishedWrappedTaskUnchanged(t *testing.T) {
 	rendered := strings.Join([]string{insertCBMark(firstLine), contLine}, "\n")
 	refs := []checkboxRef{{rawLine: 0, checked: false}}
 
-	out, _, _, _ := processCheckboxesAndCode(rendered, refs, nil, nil)
+	out, _, _, _, _ := processCheckboxesAndCode(rendered, refs, nil, nil, nil)
 	outLines := strings.Split(out, "\n")
 
 	if outLines[0] != firstLine {
@@ -1230,7 +1290,7 @@ func TestProcessCheckboxesAndCodeDimStopsAtNextTask(t *testing.T) {
 		{rawLine: 1, checked: false},
 	}
 
-	out, _, _, _ := processCheckboxesAndCode(rendered, refs, nil, nil)
+	out, _, _, _, _ := processCheckboxesAndCode(rendered, refs, nil, nil, nil)
 	outLines := strings.Split(out, "\n")
 
 	if outLines[0] == lines[0] {
@@ -1266,7 +1326,7 @@ func TestProcessCheckboxesAndCodeMutesFinishedTasks(t *testing.T) {
 		{rawLine: 1, checked: true},
 	}
 
-	out, checkboxLines, _, _ := processCheckboxesAndCode(rendered, refs, nil, nil)
+	out, checkboxLines, _, _, _ := processCheckboxesAndCode(rendered, refs, nil, nil, nil)
 	outLines := strings.Split(out, "\n")
 
 	if checkboxLines[0] != 0 || checkboxLines[1] != 1 {
@@ -2539,6 +2599,94 @@ func TestHeadlessEscOnCleanEditorIsNoop(t *testing.T) {
 	}
 	if len(m.undoStack) != stackLen {
 		t.Errorf("undoStack len = %d, want unchanged %d (clean Esc must be a no-op save)", len(m.undoStack), stackLen)
+	}
+}
+
+// TestHeadlessViewEditViewRoundTripPreservesRawLine covers #22: opening the
+// editor from a cursor position deep in a wrapped note must start the
+// textarea at that same raw line (not line 0), and saving back out must
+// return the viewer cursor to that line (not jump to the top).
+func TestHeadlessViewEditViewRoundTripPreservesRawLine(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("Wrap Round Trip")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	longPara := strings.Repeat("supercalifragilistic ", 30)
+	n.Body = "# Heading\n\n" + longPara + "\n\n- [ ] a task\n"
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+
+	m.openOrCreateNote(n.Title)
+	sp := &m.splits[m.activeSplit]
+	if sp.activeView != viewNote || sp.viewer.note == nil {
+		t.Fatalf("expected note open, activeView=%v", sp.activeView)
+	}
+
+	checkboxRendered, ok := firstKey(sp.viewer.checkboxLines)
+	if !ok {
+		t.Fatalf("expected a checkbox line in the rendered output")
+	}
+	sp.viewer.cursorRow = checkboxRendered
+	wantRaw := sp.viewer.rawLineAt(checkboxRendered)
+	if wantRaw == 0 {
+		t.Fatalf("test setup: checkbox's raw line resolved to 0, want a nonzero line deep in the note (test wouldn't distinguish from the top-of-note bug)")
+	}
+
+	m = step(t, m, key("e"), "e (enter edit mode at the checkbox's position)")
+	sp = &m.splits[m.activeSplit]
+	if sp.activeView != viewEdit {
+		t.Fatalf("expected viewEdit")
+	}
+	if got := sp.editor.ta.Line(); got != wantRaw {
+		t.Errorf("editor cursor line on entry = %d, want %d (the view cursor's raw line)", got, wantRaw)
+	}
+
+	m = step(t, m, tea.KeyMsg{Type: tea.KeyCtrlS}, "ctrl+s (save, return to view)")
+	sp = &m.splits[m.activeSplit]
+	if sp.activeView != viewNote {
+		t.Fatalf("expected viewNote after save")
+	}
+	if got := sp.viewer.rawLineAt(sp.viewer.cursorRow); got != wantRaw {
+		t.Errorf("after save, viewer cursor's raw line = %d, want %d (should resume where editing left off, not jump to top)", got, wantRaw)
+	}
+}
+
+// TestHeadlessEditorSaveDoesNotJumpViewerCursorToTop is the minimal
+// regression test for #22's literal complaint ("cursor jumps to top on
+// save"): commitEditorDraft used to call viewer.withNote (which zeroes
+// cursorRow) without restoring it afterward, unlike the checkbox-toggle
+// path (applyCheckboxToggle), which always has.
+func TestHeadlessEditorSaveDoesNotJumpViewerCursorToTop(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("Save No Jump")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	n.Body = "line one\n\nline two\n\nline three\n\nline four\n\nline five"
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+
+	m.openOrCreateNote(n.Title)
+	sp := &m.splits[m.activeSplit]
+	lines := strings.Split(sp.viewer.rendered, "\n")
+	if len(lines) < 3 {
+		t.Fatalf("expected several rendered lines, got %d", len(lines))
+	}
+	sp.viewer.cursorRow = len(lines) - 1 // deliberately not the top
+
+	m = step(t, m, key("e"), "e (open editor)")
+	m = step(t, m, tea.KeyMsg{Type: tea.KeyCtrlS}, "ctrl+s (save, no changes made)")
+
+	sp = &m.splits[m.activeSplit]
+	if sp.viewer.cursorRow == 0 {
+		t.Errorf("viewer cursor jumped to top after save, want it to stay near the bottom")
 	}
 }
 
