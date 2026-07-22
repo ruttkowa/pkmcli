@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -71,6 +72,18 @@ func key(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyShiftTab}
 	case "backspace":
 		return tea.KeyMsg{Type: tea.KeyBackspace}
+	case "shift+up":
+		return tea.KeyMsg{Type: tea.KeyShiftUp}
+	case "shift+down":
+		return tea.KeyMsg{Type: tea.KeyShiftDown}
+	case "shift+left":
+		return tea.KeyMsg{Type: tea.KeyShiftLeft}
+	case "shift+right":
+		return tea.KeyMsg{Type: tea.KeyShiftRight}
+	case "ctrl+a":
+		return tea.KeyMsg{Type: tea.KeyCtrlA}
+	case "ctrl+c":
+		return tea.KeyMsg{Type: tea.KeyCtrlC}
 	default:
 		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 	}
@@ -78,6 +91,14 @@ func key(s string) tea.KeyMsg {
 
 func click(x, y int) tea.MouseMsg {
 	return tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}
+}
+
+func drag(x, y int) tea.MouseMsg {
+	return tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionMotion}
+}
+
+func release(x, y int) tea.MouseMsg {
+	return tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft}
 }
 
 func step(t *testing.T, m Model, msg tea.Msg, label string) Model {
@@ -2222,6 +2243,253 @@ func TestHeadlessMouseMotionIgnored(t *testing.T) {
 	m = step(t, m, motionMsg, "mouse motion")
 	if m.activeSplit != before {
 		t.Error("mouse motion should not change active split")
+	}
+}
+
+// TestHeadlessMouseMotionWithoutDragDoesNotSelect complements
+// TestHeadlessMouseMotionIgnored above (#2): motion is ignored generally,
+// but specifically it must not start or extend a text selection when no
+// press over plain body text preceded it (viewer.dragging stays false).
+func TestHeadlessMouseMotionWithoutDragDoesNotSelect(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("NoDrag")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	n.Body = "Alpha one.\n\nBravo two."
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+
+	sp := &m.splits[m.activeSplit]
+	sp.openNote(n)
+	l := m.computeLayout()
+	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+
+	m = step(t, m, drag(l.sidebarWidth+5, 5), "motion without a prior press")
+	sp = &m.splits[m.activeSplit]
+	if sp.viewer.selActive || sp.viewer.dragging {
+		t.Error("motion without a preceding press must not start or extend a selection")
+	}
+}
+
+// TestHeadlessSelectionShiftArrowExtendsAndPlainMoveClears covers #2's
+// keyboard selection: Shift+Down sets the anchor on first use and extends
+// the selection, while a subsequent plain (non-shift) movement clears it.
+func TestHeadlessSelectionShiftArrowExtendsAndPlainMoveClears(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("Selectable")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	n.Body = "Alpha one.\n\nBravo two.\n\nCharlie three."
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+
+	sp := &m.splits[m.activeSplit]
+	sp.openNote(n)
+	l := m.computeLayout()
+	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+	sp.viewer.cursorRow, sp.viewer.cursorCol = 0, 0
+
+	m = step(t, m, key("shift+down"), "shift+down extends selection")
+	sp = &m.splits[m.activeSplit]
+	if !sp.viewer.selActive {
+		t.Fatal("expected selActive=true after shift+down")
+	}
+	if sp.viewer.selAnchorRow != 0 {
+		t.Errorf("selAnchorRow = %d, want 0 (anchor set on first shift-move)", sp.viewer.selAnchorRow)
+	}
+	if sp.viewer.cursorRow == 0 {
+		t.Error("cursor should have moved down from row 0")
+	}
+
+	m = step(t, m, key("down"), "plain down clears selection")
+	sp = &m.splits[m.activeSplit]
+	if sp.viewer.selActive {
+		t.Error("expected selActive=false after a plain (non-shift) movement")
+	}
+}
+
+// TestHeadlessSelectionCtrlASelectsEverything covers #2's Ctrl+A: anchor at
+// document start, cursor at document end.
+func TestHeadlessSelectionCtrlASelectsEverything(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("SelectAll")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	n.Body = "Alpha one.\n\nBravo two.\n\nCharlie three."
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+
+	sp := &m.splits[m.activeSplit]
+	sp.openNote(n)
+	l := m.computeLayout()
+	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+
+	m = step(t, m, key("ctrl+a"), "ctrl+a selects everything")
+	sp = &m.splits[m.activeSplit]
+	if !sp.viewer.selActive {
+		t.Fatal("expected selActive=true after ctrl+a")
+	}
+	if sp.viewer.selAnchorRow != 0 || sp.viewer.selAnchorCol != 0 {
+		t.Errorf("anchor = (%d,%d), want (0,0)", sp.viewer.selAnchorRow, sp.viewer.selAnchorCol)
+	}
+	lines := strings.Split(sp.viewer.rendered, "\n")
+	if sp.viewer.cursorRow != len(lines)-1 {
+		t.Errorf("cursorRow = %d, want %d (last rendered line)", sp.viewer.cursorRow, len(lines)-1)
+	}
+}
+
+// TestHeadlessSelectionCtrlCWithoutSelectionActsLikeEsc guards the
+// dispatch-order fix in model.go: without an active selection, Ctrl+C must
+// still fall back to the existing cancel/back behavior (same as Esc).
+func TestHeadlessSelectionCtrlCWithoutSelectionActsLikeEsc(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("NoSelection")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	n.Body = "Just one line."
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+
+	sp := &m.splits[m.activeSplit]
+	sp.openNote(n) // fresh history: sp.back() has nothing to go back to
+	l := m.computeLayout()
+	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+
+	m = step(t, m, key("ctrl+c"), "ctrl+c without an active selection")
+	sp = &m.splits[m.activeSplit]
+	if sp.activeView != viewList {
+		t.Errorf("expected ctrl+c without a selection to act like Esc (back to list), got activeView=%v", sp.activeView)
+	}
+}
+
+// TestHeadlessSelectionCtrlCCopiesRawTextWithCharCount covers #2's core
+// requirement: the copied text is the note's raw source (no ANSI codes),
+// found via #22's rawLines map, and the character count is reported in
+// statusMsg so a silent OSC 52 truncation on a large copy would be visible.
+func TestHeadlessSelectionCtrlCCopiesRawTextWithCharCount(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("CopyMe")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	n.Body = "Alpha one.\n\nBravo two.\n\nCharlie three."
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+
+	sp := &m.splits[m.activeSplit]
+	sp.openNote(n)
+	l := m.computeLayout()
+	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+
+	// Select from raw line 0 ("Alpha one.") through raw line 2 ("Bravo two.").
+	startRendered := sp.viewer.renderedLineForRaw(0)
+	endRendered := sp.viewer.renderedLineForRaw(2)
+	sp.viewer.selAnchorRow, sp.viewer.selAnchorCol = startRendered, 0
+	sp.viewer.cursorRow, sp.viewer.cursorCol = endRendered, 0
+	sp.viewer.selActive = true
+
+	wantText := sp.viewer.selectedRawText()
+	if wantText == "" {
+		t.Fatal("selectedRawText returned empty before Ctrl+C")
+	}
+	if strings.Contains(wantText, "\x1b") {
+		t.Error("selectedRawText leaked ANSI escape codes — must be raw source text")
+	}
+	if !strings.Contains(wantText, "Alpha one.") || !strings.Contains(wantText, "Bravo two.") {
+		t.Errorf("selectedRawText = %q, want it to contain both raw lines in the span", wantText)
+	}
+
+	m = step(t, m, key("ctrl+c"), "ctrl+c copies the selection")
+	wantMsg := fmt.Sprintf("copied %d characters", len([]rune(wantText)))
+	if m.statusMsg != wantMsg {
+		t.Errorf("statusMsg = %q, want %q", m.statusMsg, wantMsg)
+	}
+}
+
+// TestHeadlessMouseDragSelectReleaseCopiesOnce covers #2's mouse flow: a
+// press over plain body text starts a drag, motion to a different row makes
+// it a real selection, and release auto-copies exactly once (a second
+// release, with the drag already ended, must not copy again).
+func TestHeadlessMouseDragSelectReleaseCopiesOnce(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("DragMe")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	n.Body = "Alpha one.\n\nBravo two.\n\nCharlie three."
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+
+	sp := &m.splits[m.activeSplit]
+	sp.openNote(n)
+	l := m.computeLayout()
+	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+
+	startRow := sp.viewer.renderedLineForRaw(0)
+	endRow := sp.viewer.renderedLineForRaw(2)
+	if endRow == startRow {
+		t.Fatalf("test note didn't render distinct rows for raw lines 0 and 2")
+	}
+
+	x := l.sidebarWidth + 5
+	// Inverse of handleMouseClick's bodyLine math (see TestHeadlessCheckboxClickToggle).
+	yFor := func(bodyLine int) int {
+		return 2 + sp.viewer.headerLineCount + 1 + bodyLine - sp.viewer.scrollOff
+	}
+
+	m = step(t, m, click(x, yFor(startRow)), "press on plain body text")
+	sp = &m.splits[m.activeSplit]
+	if !sp.viewer.dragging {
+		t.Fatal("expected dragging=true after a press on plain body text")
+	}
+	if sp.viewer.selActive {
+		t.Error("selActive should still be false right after press, before any motion")
+	}
+
+	m = step(t, m, drag(x, yFor(endRow)), "drag to a later row")
+	sp = &m.splits[m.activeSplit]
+	if !sp.viewer.selActive {
+		t.Fatal("expected selActive=true after dragging to a different row")
+	}
+	if sp.viewer.cursorRow != endRow {
+		t.Errorf("cursorRow = %d, want %d after drag", sp.viewer.cursorRow, endRow)
+	}
+
+	m = step(t, m, release(x, yFor(endRow)), "release ends drag and auto-copies")
+	sp = &m.splits[m.activeSplit]
+	if sp.viewer.dragging {
+		t.Error("expected dragging=false after release")
+	}
+	if !strings.HasPrefix(m.statusMsg, "copied ") || !strings.HasSuffix(m.statusMsg, "characters") {
+		t.Errorf("statusMsg = %q, want a \"copied N characters\" report", m.statusMsg)
+	}
+	firstMsg := m.statusMsg
+
+	m = step(t, m, release(x, yFor(endRow)), "second release must not copy again")
+	if m.statusMsg != firstMsg {
+		t.Errorf("second release changed statusMsg from %q to %q — expected exactly one copy", firstMsg, m.statusMsg)
 	}
 }
 

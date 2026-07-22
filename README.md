@@ -95,7 +95,7 @@ Everywhere else — Sidebar, Note List, Note Viewer, Help — has no free-text f
 
 Two rules apply everywhere, in every mode:
 
-- **`Ctrl+C` is always rewritten to `Esc`** before any mode sees it — it cancels/closes, it never quits the app.
+- **`Ctrl+C` is always rewritten to `Esc`** before any mode sees it — it cancels/closes, it never quits the app. The one exception: in the Note Viewer with an active text selection, `Ctrl+C` copies the selection instead (see [Text Selection](#text-selection) below).
 - **Quitting only happens via** the Quit key (default `Ctrl+Q`), `Ctrl+D`, or `:quit`/`:exit`.
 
 `Ctrl+Space`, `Ctrl+P`, `Ctrl+W`, `Ctrl+Q`, `Ctrl+Z`, `Ctrl+Y`, and `Ctrl+S` below are **defaults** — every one of them is remappable in [`:config` → Keybindings](#config-overlay) if it collides with your terminal multiplexer's own prefix (see [Running under tmux / zellij](#running-under-tmux--zellij)).
@@ -124,7 +124,7 @@ Active whenever no overlay above has captured input.
 | `P` | Palette prefilled `add project ` |
 | `I` | Open the **Import** popover directly (not via the palette) |
 
-Mouse: left-click is supported throughout (sidebar items, note-list rows, `[[links]]` and checkboxes in the viewer). The scroll wheel scrolls whichever pane (sidebar, note list, viewer, help) is under the cursor, without changing focus.
+Mouse: left-click is supported throughout (sidebar items, note-list rows, `[[links]]` and checkboxes in the viewer); click-dragging over plain body text in the viewer selects and auto-copies text (see [Text Selection](#text-selection)). The scroll wheel scrolls whichever pane (sidebar, note list, viewer, help) is under the cursor, without changing focus.
 
 ### Sidebar
 
@@ -180,6 +180,25 @@ The bottom row of the pane is a fixed footer showing `Last saved: HH:MM:SS` (fro
 **Cursor position carries across View ↔ Edit.** Pressing `e` opens the editor at the raw line the block cursor was on (not always the top); saving or Esc-closing the editor returns the block cursor to that same line (not the top). This is line-level and best-effort, not character-exact: glamour reflows markdown into a different line layout than the raw file (word-wrap, list indentation, link aliasing), so there's no exact inverse for every rendered position — landing on the correct *line* is the guarantee, not a specific column.
 
 **Foldable headings.** Every heading shows a `▼`/`▶` glyph. Collapsing one (`←`, or a click, on the block cursor's heading line) hides everything until the next heading of the same or higher level — nested sub-headings inside a collapsed section stay hidden too, regardless of their own fold state. `→` expands it again, or click it a second time. Fold state is view-only: it's per-note, resets when you switch notes, and never touches the file on disk.
+
+#### Text Selection
+
+View mode only — the editor has its own separate Ctrl+L line operations (see below) and no selection of its own yet.
+
+| Key / Mouse | Action |
+|---|---|
+| `Shift+↑↓←→` | Extend the selection from the block cursor's position (the anchor is set the first time you shift-move) |
+| **Ctrl+A** | Select the entire note |
+| **Ctrl+C** | Copy the selection to the clipboard via OSC 52 |
+| `Esc` | Clear the selection (a second `Esc` then does its usual "back") |
+| Any plain (non-shift) cursor movement | Clears the selection |
+| Click-drag over body text | Selects from press to release; releasing **copies automatically**, no `Ctrl+C` needed |
+
+The status bar reports how many characters were copied (`copied N characters`) — OSC 52 has a per-terminal size limit, so this makes a silently-truncated large copy (e.g. `Ctrl+A` on a long note) visible instead of failing invisibly.
+
+The copied text is always the note's raw Markdown source, not the rendered/ANSI output and not resolved `[[link|alias]]` text. Because that raw text is recovered via the same rendered→raw line mapping the block cursor uses to survive View↔Edit round-trips (best-effort, line-level — see "Cursor position carries across View ↔ Edit" above), a selection copies the **full raw lines** its start and end touch, not an exact character span within them — the highlight you see follows the same whole-line granularity.
+
+There is no `Ctrl+V` paste in the viewer: view mode has no editable buffer to paste into. Pasting is out of scope until the app has a proper editable-selection buffer.
 
 ### Editor
 

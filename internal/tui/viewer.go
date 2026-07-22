@@ -74,11 +74,21 @@ type viewerModel struct {
 	cursorRow int
 	cursorCol int
 
+	// Text selection (#2), view-mode only. selAnchorRow/Col is where the
+	// selection started; the live end is always cursorRow/cursorCol. Set by
+	// Shift+Arrow (keyboard) or a mouse press over plain body text followed
+	// by drag (model.go's handleMouseDrag/handleMouseRelease).
+	selAnchorRow int
+	selAnchorCol int
+	selActive    bool
+	dragging     bool // true while a mouse button is held after a body-text press
+
 	// Set by update() when Enter activates whatever's under the cursor;
 	// model.go's dispatcher consumes and clears these on the next frame.
 	pendingLinkOpen    string // note title to open, or ""
 	pendingCheckboxRaw int    // raw body line to toggle, or -1
 	pendingCodeCopy    string // code block content to copy, or ""
+	pendingCopyText    string // selected raw text to copy (#2, Ctrl+C), or ""
 
 	// Set by update() when Left/Right collapses/expands a heading under the
 	// cursor (#20); model.go's dispatcher consumes and clears this, since
@@ -108,9 +118,14 @@ func (m viewerModel) withNote(n *vault.Note) viewerModel {
 	m.folded = nil
 	m.cursorRow = 0
 	m.cursorCol = 0
+	m.selAnchorRow = 0
+	m.selAnchorCol = 0
+	m.selActive = false
+	m.dragging = false
 	m.pendingLinkOpen = ""
 	m.pendingCheckboxRaw = -1
 	m.pendingCodeCopy = ""
+	m.pendingCopyText = ""
 	m.pendingFoldRaw = -1
 	m.pendingFoldCollapse = false
 	return m
@@ -306,19 +321,41 @@ func (m viewerModel) update(msg tea.KeyMsg, height int) (viewerModel, tea.Cmd) {
 		if m.scrollOff > 0 {
 			m.scrollOff--
 		}
+	case "shift+up", "shift+down", "shift+left", "shift+right":
+		if !m.selActive {
+			m.selAnchorRow, m.selAnchorCol = m.cursorRow, m.cursorCol
+			m.selActive = true
+		}
+		m = m.moveCursorChar(strings.TrimPrefix(msg.String(), "shift+"), lines)
+		m = m.followCursor(height)
+	case "ctrl+a":
+		if len(lines) > 0 {
+			m.selAnchorRow, m.selAnchorCol = 0, 0
+			m.cursorRow = len(lines) - 1
+			m.cursorCol = xansi.StringWidth(lines[m.cursorRow])
+			m.selActive = true
+			m = m.followCursor(height)
+		}
+	case "ctrl+c":
+		if m.selActive {
+			m.pendingCopyText = m.selectedRawText()
+		}
 	case "down":
+		m.selActive = false
 		if m.cursorRow < len(lines)-1 {
 			m.cursorRow++
 			m.cursorCol = clampCol(m.cursorCol, lines[m.cursorRow])
 		}
 		m = m.followCursor(height)
 	case "up":
+		m.selActive = false
 		if m.cursorRow > 0 {
 			m.cursorRow--
 			m.cursorCol = clampCol(m.cursorCol, lines[m.cursorRow])
 		}
 		m = m.followCursor(height)
 	case "left":
+		m.selActive = false
 		// #20: on a heading line, Left collapses it instead of moving the
 		// cursor — horizontal movement on a heading line is otherwise the
 		// least valuable key in the app. Actually applying the fold needs a
@@ -338,6 +375,7 @@ func (m viewerModel) update(msg tea.KeyMsg, height int) (viewerModel, tea.Cmd) {
 		}
 		m = m.followCursor(height)
 	case "right":
+		m.selActive = false
 		if rawLine, ok := m.headingRawLineAt(m.cursorRow); ok {
 			m.pendingFoldRaw = rawLine
 			m.pendingFoldCollapse = false
@@ -360,10 +398,89 @@ func (m viewerModel) update(msg tea.KeyMsg, height int) (viewerModel, tea.Cmd) {
 		if rawLine, ok := m.checkboxRawLineAt(m.cursorRow); ok {
 			m.pendingCheckboxRaw = rawLine
 		}
-	case "esc", "backspace":
+	case "esc":
+		// Esc dismisses an active selection first, same as most editors;
+		// only navigates back once there's nothing left to deselect.
+		if m.selActive {
+			m.selActive = false
+			break
+		}
+		m.back = true
+	case "backspace":
 		m.back = true
 	}
 	return m, nil
+}
+
+// moveCursorChar moves the block cursor one step in dir, without the
+// heading-fold special case plain Left/Right have — extending a selection
+// with Shift+Left/Right should always move the cursor, never collapse a
+// heading. Shared by the Shift+Arrow cases in update().
+func (m viewerModel) moveCursorChar(dir string, lines []string) viewerModel {
+	switch dir {
+	case "up":
+		if m.cursorRow > 0 {
+			m.cursorRow--
+			m.cursorCol = clampCol(m.cursorCol, lines[m.cursorRow])
+		}
+	case "down":
+		if m.cursorRow < len(lines)-1 {
+			m.cursorRow++
+			m.cursorCol = clampCol(m.cursorCol, lines[m.cursorRow])
+		}
+	case "left":
+		if m.cursorCol > 0 {
+			m.cursorCol--
+		} else if m.cursorRow > 0 {
+			m.cursorRow--
+			m.cursorCol = xansi.StringWidth(lines[m.cursorRow])
+		}
+	case "right":
+		curWidth := 0
+		if m.cursorRow >= 0 && m.cursorRow < len(lines) {
+			curWidth = xansi.StringWidth(lines[m.cursorRow])
+		}
+		if m.cursorCol < curWidth {
+			m.cursorCol++
+		} else if m.cursorRow < len(lines)-1 {
+			m.cursorRow++
+			m.cursorCol = 0
+		}
+	}
+	return m
+}
+
+// selectedRawText returns the raw (unrendered) body text spanned by the
+// active selection (#2). Selection endpoints live in rendered-line
+// coordinates, but the clipboard payload must be the note's actual source
+// text — not ANSI-styled output and not resolved wikilink alias text — so
+// this reuses #22's rendered→raw map (rawLineAt) to find which raw lines the
+// selection touches. That map is line-level, not character-exact (see its
+// doc comment), so the copy is the full raw lines the selection's start and
+// end rendered rows map to, not an exact character span within them.
+func (m viewerModel) selectedRawText() string {
+	if !m.selActive || m.note == nil {
+		return ""
+	}
+	startRendered, endRendered := m.selAnchorRow, m.cursorRow
+	if startRendered > endRendered {
+		startRendered, endRendered = endRendered, startRendered
+	}
+	startRaw, endRaw := m.rawLineAt(startRendered), m.rawLineAt(endRendered)
+	if startRaw > endRaw {
+		startRaw, endRaw = endRaw, startRaw
+	}
+	rawBody := strings.Split(m.note.Body, "\n")
+	if startRaw < 0 {
+		startRaw = 0
+	}
+	if endRaw >= len(rawBody) {
+		endRaw = len(rawBody) - 1
+	}
+	if startRaw > endRaw || startRaw >= len(rawBody) {
+		return ""
+	}
+	return strings.Join(rawBody[startRaw:endRaw+1], "\n")
 }
 
 func (m viewerModel) render(width, height int, focused bool) string {
@@ -474,14 +591,30 @@ func (m viewerModel) withCursorOverlay(lines []string) []string {
 	out := make([]string, len(lines))
 	copy(out, lines)
 
-	_, isCheckbox := m.checkboxRawLineAt(m.cursorRow)
-	switch cs, isCode := m.codeSpanAt(m.cursorRow); {
-	case m.linkAtLine(m.cursorRow) != "", isCheckbox:
-		out[m.cursorRow] = highlightPlain(lines[m.cursorRow], activeTheme.Accent, activeTheme.AccentFg)
-	case isCode:
-		for r := cs.startLine; r <= cs.endLine && r < len(out); r++ {
+	if m.selActive {
+		// #2: selection highlight takes priority over the link/checkbox/code
+		// highlight below. Whole rendered rows, not partial columns — same
+		// line-level honesty as selectedRawText's copy, since a highlight
+		// more precise than what gets copied would be misleading.
+		start, end := m.selAnchorRow, m.cursorRow
+		if start > end {
+			start, end = end, start
+		}
+		for r := start; r <= end && r < len(out); r++ {
 			if r >= 0 {
-				out[r] = highlightPlain(lines[r], activeTheme.BlurredBg, activeTheme.TextPrimary)
+				out[r] = highlightPlain(lines[r], activeTheme.Accent, activeTheme.AccentFg)
+			}
+		}
+	} else {
+		_, isCheckbox := m.checkboxRawLineAt(m.cursorRow)
+		switch cs, isCode := m.codeSpanAt(m.cursorRow); {
+		case m.linkAtLine(m.cursorRow) != "", isCheckbox:
+			out[m.cursorRow] = highlightPlain(lines[m.cursorRow], activeTheme.Accent, activeTheme.AccentFg)
+		case isCode:
+			for r := cs.startLine; r <= cs.endLine && r < len(out); r++ {
+				if r >= 0 {
+					out[r] = highlightPlain(lines[r], activeTheme.BlurredBg, activeTheme.TextPrimary)
+				}
 			}
 		}
 	}

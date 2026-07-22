@@ -41,6 +41,20 @@ VIEW MODE CURSOR
   The viewer's bottom row is a fixed footer: "Last saved: HH:MM:SS" plus
   scroll %. This is separate from the hotkey bar below the pane.
 
+TEXT SELECTION  —  view mode only
+  Shift+↑↓←→  extend selection (anchor set on first shift-move)
+  Ctrl+A      select the whole note
+  Ctrl+C      copy the selection (OSC 52); reports the character count in
+              the status bar since a very large copy can be silently
+              truncated by the terminal
+  Esc         clear the selection (a second Esc then goes back, as usual)
+  Any plain (non-shift) cursor move clears the selection.
+  Click-drag over body text selects from press to release; releasing
+  copies automatically — no Ctrl+C needed for a mouse selection.
+  Copied text is always the note's raw Markdown, never the rendered/ANSI
+  output or a resolved [[link|alias]]. There is no Ctrl+V here — view mode
+  has no editable buffer to paste into.
+
 READING & EDITING
   e           open current note in the editor
   Ctrl+S      save (in editor)

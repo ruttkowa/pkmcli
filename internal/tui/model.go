@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -324,18 +325,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resizeOpenEditors(m.computeLayout())
 
 	case tea.MouseMsg:
-		if msg.Action == tea.MouseActionPress {
+		switch msg.Action {
+		case tea.MouseActionPress:
 			switch msg.Button {
 			case tea.MouseButtonLeft:
 				m.handleMouseClick(msg.X, msg.Y)
 			case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
 				m.handleMouseWheel(msg.X, msg.Button)
 			}
+		case tea.MouseActionMotion:
+			m.handleMouseDrag(msg.X, msg.Y)
+		case tea.MouseActionRelease:
+			if cmd := m.handleMouseRelease(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
-			msg = tea.KeyMsg{Type: tea.KeyEsc}
+			// #2: Ctrl+C copies an active view-mode text selection instead of
+			// the usual cancel-to-Esc remap below — but only then; this check
+			// must run before the remap, not after, or the selection case
+			// would never reach the viewer (same dispatch-order trap as the
+			// Ctrl+L line-ops chord in #10).
+			selecting := m.activePane == paneMain && len(m.splits) > 0 &&
+				m.splits[m.activeSplit].activeView == viewNote && m.splits[m.activeSplit].viewer.selActive
+			if !selecting {
+				msg = tea.KeyMsg{Type: tea.KeyEsc}
+			}
 		}
 		if m.showPalette {
 			var cmd tea.Cmd
@@ -751,6 +768,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						cmds = append(cmds, copyToClipboardCmd(content))
 						m.statusMsg = "copied code block"
 					}
+					if text := sp.viewer.pendingCopyText; text != "" {
+						sp.viewer.pendingCopyText = ""
+						cmds = append(cmds, copyToClipboardCmd(text))
+						// OSC 52 silently truncates past a per-terminal size
+						// limit — reporting the count makes that visible
+						// rather than a large Ctrl+A copy failing invisibly.
+						m.statusMsg = fmt.Sprintf("copied %d characters", len([]rune(text)))
+					}
 					if sp.viewer.pendingFoldRaw >= 0 {
 						raw := sp.viewer.pendingFoldRaw
 						collapse := sp.viewer.pendingFoldCollapse
@@ -1112,6 +1137,7 @@ func (m *Model) handleMouseClick(x, y int) {
 		}
 		m.activeSplit = clickedSplit
 		m.activePane = paneMain
+		paneX := mainX - clickedSplit*slotWidth // x within the clicked pane's outer box
 
 		sp := &m.splits[m.activeSplit]
 		if sp.activeView == viewList {
@@ -1142,8 +1168,25 @@ func (m *Model) handleMouseClick(x, y int) {
 				m.toggleFoldAt(sp, bodyLine)
 			} else if target := sp.viewer.linkAtLine(bodyLine); target != "" {
 				m.openOrCreateNote(target)
-			} else {
+			} else if _, ok := sp.viewer.checkboxRawLineAt(bodyLine); ok {
 				m.toggleCheckboxAt(sp, bodyLine)
+			} else {
+				// #2: a press over plain body text (not a link/checkbox/
+				// heading, all handled above and unchanged) starts a
+				// drag-select instead — see handleMouseDrag/handleMouseRelease
+				// for how it's extended and finalized.
+				col := paneX - 2 // -1 left border, -1 Padding(0,1)
+				if col < 0 {
+					col = 0
+				}
+				bodyLines := strings.Split(sp.viewer.rendered, "\n")
+				if bodyLine >= 0 && bodyLine < len(bodyLines) {
+					col = clampCol(col, bodyLines[bodyLine])
+				}
+				sp.viewer.selAnchorRow, sp.viewer.selAnchorCol = bodyLine, col
+				sp.viewer.cursorRow, sp.viewer.cursorCol = bodyLine, col
+				sp.viewer.selActive = false
+				sp.viewer.dragging = true
 			}
 		}
 	}
@@ -1313,6 +1356,72 @@ func (m *Model) handleMouseWheel(x int, button tea.MouseButton) {
 			sp.helpScrollOff++
 		}
 	}
+}
+
+// handleMouseDrag extends the active split's selection while a mouse button
+// is held (#2, MouseActionMotion — reported continuously during a drag by
+// tea.WithMouseCellMotion() in cmd/pkm/main.go). No-op unless a press over
+// plain body text (handleMouseClick's drag-start branch) is already in
+// progress; a press on a link/checkbox/heading never sets dragging, so
+// motion after one of those can't drag stale coordinates into a new note.
+func (m *Model) handleMouseDrag(x, y int) {
+	if len(m.splits) == 0 {
+		return
+	}
+	sp := &m.splits[m.activeSplit]
+	if !sp.viewer.dragging || sp.activeView != viewNote {
+		return
+	}
+	l := m.computeLayout()
+	paneOuter := l.paneWidth + 2
+	slotWidth := paneOuter + 1
+	paneX := x - l.sidebarWidth - 1 - m.activeSplit*slotWidth
+	col := paneX - 2
+	if col < 0 {
+		col = 0
+	}
+	contentRow := y - 2
+	bodyLine := (contentRow - sp.viewer.headerLineCount - 1) + sp.viewer.scrollOff
+	if bodyLine < 0 {
+		bodyLine = 0
+	}
+	bodyLines := strings.Split(sp.viewer.rendered, "\n")
+	if len(bodyLines) == 0 {
+		return
+	}
+	if bodyLine >= len(bodyLines) {
+		bodyLine = len(bodyLines) - 1
+	}
+	col = clampCol(col, bodyLines[bodyLine])
+	if bodyLine != sp.viewer.selAnchorRow || col != sp.viewer.selAnchorCol {
+		sp.viewer.selActive = true
+	}
+	sp.viewer.cursorRow, sp.viewer.cursorCol = bodyLine, col
+	sp.viewer = sp.viewer.followCursor(l.contentHeight)
+}
+
+// handleMouseRelease ends a drag-select and, if it produced a real
+// selection, copies it automatically (#2) — unlike Ctrl+C, which requires an
+// explicit keypress, mirroring how mouse selection behaves in other
+// terminal apps.
+func (m *Model) handleMouseRelease() tea.Cmd {
+	if len(m.splits) == 0 {
+		return nil
+	}
+	sp := &m.splits[m.activeSplit]
+	if !sp.viewer.dragging {
+		return nil
+	}
+	sp.viewer.dragging = false
+	if !sp.viewer.selActive {
+		return nil
+	}
+	text := sp.viewer.selectedRawText()
+	if text == "" {
+		return nil
+	}
+	m.statusMsg = fmt.Sprintf("copied %d characters", len([]rune(text)))
+	return copyToClipboardCmd(text)
 }
 
 // openOrCreateNote navigates to the named note, creating it if it doesn't exist.

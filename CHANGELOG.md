@@ -519,9 +519,86 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   `:delete`/`:trash` command table rows), `help_view.go` (TRASH section,
   command list), `.gitignore` (`.pkm/trash/`, `trash.json`) updated.
 
+### Added (issue batch, 2026-07-22, #2)
+- **Text selection + copy in the Note Viewer** — `Shift+↑↓←→` extends a
+  selection from the block cursor (anchor set on the first shift-move);
+  `Ctrl+A` selects the whole note; `Ctrl+C` copies it via the existing
+  OSC 52 mechanism (`copyToClipboardCmd`, already used by code-block copy)
+  and reports the character count in the status bar, since OSC 52 silently
+  truncates past a per-terminal size limit that a large `Ctrl+A` copy could
+  hit unnoticed otherwise. `Esc` clears the selection first, then falls
+  back to the usual "go back" on a second press. Any plain (non-shift)
+  cursor movement clears it too. Mouse click-drag over plain body text
+  (not a link/checkbox/heading, which keep their existing click behavior
+  unchanged) selects from press to release and **auto-copies on release**
+  — no `Ctrl+C` needed for a mouse selection, matching how selection works
+  in every other terminal app. **No `Ctrl+V`** — dropped per the locked
+  qualification decision, since view mode has no editable buffer to paste
+  into; paste stays out of scope until #4 gives the editor a real
+  selection/paste buffer.
+  `internal/tui/viewer.go` (`selAnchorRow`/`selAnchorCol`/`selActive`/
+  `dragging` fields, `moveCursorChar`, `selectedRawText`, selection
+  highlighting in `withCursorOverlay`), `internal/tui/model.go`
+  (`handleMouseDrag`, `handleMouseRelease`, drag-start branch in
+  `handleMouseClick`, `Ctrl+C` dispatch-order fix below).
+- **Copied text is always raw Markdown, never rendered ANSI output or a
+  resolved `[[link|alias]]`.** Selection endpoints live in *rendered*-line
+  coordinates, but the clipboard payload has to be the note's actual
+  source — so copy reuses #22's rendered→raw line map (`rawLineAt`)
+  instead of building a second one, exactly as the qualification
+  specified. That map is line-level, not character-exact (see its own
+  doc comment), so a selection's Ctrl+C/auto-copy is the **full raw
+  lines** its start and end rendered rows touch, not an exact character
+  span within them — the on-screen highlight uses the same whole-line
+  granularity, so what's highlighted always matches what gets copied.
+- **`Ctrl+C` dispatch-order fix.** The existing global "Ctrl+C always
+  means Esc" remap sits at the very top of `Update()`'s `tea.KeyMsg`
+  handling, before any mode sees the key. The selection-copy special case
+  has to be checked *before* that remap runs, not after, or it can never
+  reach the viewer — same class of bug as the Ctrl+L dispatch-order trap
+  in #10's line operations. Fixed by gating the remap on
+  `viewNote && selActive` instead of applying it unconditionally; every
+  other Ctrl+C behavior (cancel editor, close overlay, etc.) is
+  unchanged.
+
+### Verify
+- `go build ./...`, `go vet ./...`, `go test ./...` — clean.
+- `internal/tui/tui_test.go`:
+  `TestHeadlessMouseMotionWithoutDragDoesNotSelect` (motion alone, with no
+  preceding press, must not start or extend a selection),
+  `TestHeadlessSelectionShiftArrowExtendsAndPlainMoveClears`,
+  `TestHeadlessSelectionCtrlASelectsEverything`,
+  `TestHeadlessSelectionCtrlCWithoutSelectionActsLikeEsc` (guards the
+  dispatch-order fix from regressing back to the unconditional remap),
+  `TestHeadlessSelectionCtrlCCopiesRawTextWithCharCount` (also asserts the
+  copied text contains no `\x1b` ANSI escapes),
+  `TestHeadlessMouseDragSelectReleaseCopiesOnce` (press → drag → release
+  copies exactly once; a second release after the drag ended is a no-op).
+- Manual (tmux): typed a three-paragraph note via the in-app editor;
+  `Shift+Down` × 3 visibly grew a highlighted block across multiple
+  rendered rows (confirmed via `tmux capture-pane -e`, raw ANSI, since
+  plain-text capture strips the highlight); `Ctrl+C` after 3×`Shift+Down`
+  reported "copied 32 characters", matching `len("Alpha line
+  one.\n\nBravo line two.")` exactly; `Ctrl+A` then `Ctrl+C` reported
+  "copied 53 characters", matching the full three-paragraph body exactly;
+  `Esc` with a selection active left the note open (selection cleared,
+  no navigation); a second `Esc` then returned to the list. The
+  "copied N characters" status text was invisible at a 110-column
+  terminal width — traced to the pane's hotkey-hint bar already filling
+  the width in Note Viewer context, truncating anything appended after it
+  (`fitTooltipBar`); confirmed cosmetic-only, not a logic bug, by
+  widening to 220 columns and seeing the same state correctly reported.
+  **Not verified manually:** actually pasting the OSC 52 payload into
+  another application — tmux's mouse protocol isn't practical to drive
+  synthetically for the press/drag/release path either, so that specific
+  flow relies on `TestHeadlessMouseDragSelectReleaseCopiesOnce` above
+  rather than an end-to-end terminal check.
+- README (`Ctrl+C` global-rules caveat, new "Text Selection" subsection,
+  mouse-support line), `help_view.go` (new `TEXT SELECTION` section)
+  updated. `Ctrl+V` does not appear anywhere in either.
+
 Remaining backlog tracked as GitHub issues (repo `ruttkowa/pkmcli`):
-text selection + copy/paste (#2), hotkey-bar grouping (#3), GitLab
-Issues integration (#15).
+hotkey-bar grouping (#3), GitLab Issues integration (#15).
 
 ## [0.1.0] - 2026-07-08
 
