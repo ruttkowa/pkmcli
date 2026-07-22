@@ -2539,6 +2539,83 @@ func TestHeadlessDeleteThenUndo(t *testing.T) {
 	}
 }
 
+// TestHeadlessDeleteThenUndoLeavesTrashEmpty covers #1's most important
+// trap, called out explicitly in its qualification: undoing a :delete must
+// not just recreate the note (TestHeadlessDeleteThenUndo above) — it must
+// also remove the trashed copy and its sidecar entry, or the note ends up
+// existing twice, with the orphaned trash copy later surfacing in :trash as
+// a ghost of a note that's already back.
+func TestHeadlessDeleteThenUndoLeavesTrashEmpty(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("Doomed Too")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+
+	m.cmdDelete([]string{"Doomed Too"})
+	entries, _ := m.vault.ListTrash()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 trash entry after delete, got %d", len(entries))
+	}
+	trashPath := entries[0].TrashPath
+
+	m.handleUndo()
+
+	entries, _ = m.vault.ListTrash()
+	if len(entries) != 0 {
+		t.Fatalf("expected trash empty after undo, got %d entries: %+v", len(entries), entries)
+	}
+	if _, err := os.Stat(trashPath); !os.IsNotExist(err) {
+		t.Errorf("expected the trash file removed after undo, stat err = %v", err)
+	}
+}
+
+// TestHeadlessDeleteUndoRedoReTrashesExactlyOnce covers the "Nachtrag" in
+// #1's qualification: a generic redo just calls Save, which would recreate
+// the note instead of moving it back to trash — redo of an undone delete
+// must go through vault.Trash again, landing the file in trash exactly
+// once with exactly one sidecar entry, not drift the file/sidecar apart.
+func TestHeadlessDeleteUndoRedoReTrashesExactlyOnce(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("Redo Target")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+	origPath := n.Path
+
+	m.cmdDelete([]string{"Redo Target"})
+	m.handleUndo()
+	if _, err := os.Stat(origPath); err != nil {
+		t.Fatalf("expected file restored after undo: %v", err)
+	}
+
+	m.handleRedo()
+
+	if _, err := os.Stat(origPath); !os.IsNotExist(err) {
+		t.Fatalf("expected file gone from orig path after redo, stat err = %v", err)
+	}
+	entries, _ := m.vault.ListTrash()
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly 1 trash entry after redo, got %d: %+v", len(entries), entries)
+	}
+	if _, err := os.Stat(entries[0].TrashPath); err != nil {
+		t.Errorf("expected the trash file to exist at the recorded path: %v", err)
+	}
+	if m.titleSet[strings.ToLower("Redo Target")] {
+		t.Error("expected titleSet entry removed again after redo")
+	}
+}
+
 // TestHeadlessEscSavesEditorDraft guards against the editor silently
 // discarding an in-progress edit on Esc: leaving the editor by any route must
 // persist the draft (and register an undo step), never lose it.
@@ -3567,6 +3644,177 @@ func TestApplyConfigItemTogglesTemplatesNavIndependently(t *testing.T) {
 	}
 	if !hasTasks {
 		t.Error("Tasks row should remain visible — ShowTemplatesNav must not affect it")
+	}
+}
+
+// TestDefaultConfigTrashRetentionDaysIs30 covers #1's config default.
+func TestDefaultConfigTrashRetentionDaysIs30(t *testing.T) {
+	cfg := defaultConfig()
+	if cfg.TrashRetentionDays != 30 {
+		t.Errorf("TrashRetentionDays = %d, want 30", cfg.TrashRetentionDays)
+	}
+}
+
+// TestFillConfigDefaultsSetsRetentionForOldConfig covers #1's explicit
+// backward-compatibility requirement: a config written before this field
+// existed (zero value after YAML unmarshal) must default to 30, the same
+// way every other pre-existing field in fillConfigDefaults already does.
+func TestFillConfigDefaultsSetsRetentionForOldConfig(t *testing.T) {
+	cfg := AppConfig{} // simulates an old config.yaml with no trash_retention_days key
+	fillConfigDefaults(&cfg)
+	if cfg.TrashRetentionDays != 30 {
+		t.Errorf("TrashRetentionDays after fillConfigDefaults = %d, want 30", cfg.TrashRetentionDays)
+	}
+}
+
+// TestApplyConfigItemChangesTrashRetentionDays covers the config pane's
+// numeric field (a preset cycle, per #1's qualification — reusing the
+// General section's existing fixed-choice UI rather than a new widget).
+func TestApplyConfigItemChangesTrashRetentionDays(t *testing.T) {
+	m := setupTUI(t)
+	if m.cfg.TrashRetentionDays != 30 {
+		t.Fatalf("test setup: expected default 30, got %d", m.cfg.TrashRetentionDays)
+	}
+	m.applyConfigItem(cfgItemTrashRetention, 0) // "7 days"
+	if m.cfg.TrashRetentionDays != 7 {
+		t.Errorf("TrashRetentionDays = %d, want 7", m.cfg.TrashRetentionDays)
+	}
+	m.applyConfigItem(cfgItemTrashRetention, 4) // "90 days"
+	if m.cfg.TrashRetentionDays != 90 {
+		t.Errorf("TrashRetentionDays = %d, want 90", m.cfg.TrashRetentionDays)
+	}
+}
+
+// --- Trash view (issue #1) ---
+
+func TestHeadlessTrashCommandListsAndRestores(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("Trashable")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+	origPath := n.Path
+
+	m.cmdDelete([]string{"Trashable"})
+
+	m = step(t, m, key(":"), "colon (open palette)")
+	m = typeInPalette(t, m, "trash")
+	m = step(t, m, key("enter"), "enter (run :trash)")
+
+	sp := m.splits[m.activeSplit]
+	if sp.activeView != viewTrash {
+		t.Fatalf("expected viewTrash, got %v", sp.activeView)
+	}
+	if len(sp.trashRows) != 1 || sp.trashRows[0].Title != "Trashable" {
+		t.Fatalf("trashRows = %+v, want 1 entry titled Trashable", sp.trashRows)
+	}
+
+	m = step(t, m, key("enter"), "enter (restore)")
+
+	sp = m.splits[m.activeSplit]
+	if len(sp.trashRows) != 0 {
+		t.Errorf("expected trashRows empty after restore, got %+v", sp.trashRows)
+	}
+	if _, err := os.Stat(origPath); err != nil {
+		t.Errorf("expected file restored to orig path: %v", err)
+	}
+	if _, err := m.vault.FindByTitle("Trashable"); err != nil {
+		t.Errorf("FindByTitle after restore: %v", err)
+	}
+}
+
+// TestHeadlessTrashPermanentDeleteRequiresConfirm covers the footer-line
+// confirm (not a modal): a single "d" must not delete anything yet, only a
+// second "d" on the same row does, and it's irreversible (unlike :delete,
+// no undo record — this note already survived one Ctrl+Z chance).
+func TestHeadlessTrashPermanentDeleteRequiresConfirm(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("Gone For Good")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.cmdDelete([]string{"Gone For Good"})
+	m.openTrashView()
+
+	trashPath := m.splits[m.activeSplit].trashRows[0].TrashPath
+
+	m = step(t, m, key("d"), "d (request permanent-delete confirm)")
+	sp := m.splits[m.activeSplit]
+	if len(sp.trashRows) != 1 {
+		t.Fatalf("expected the row to survive a single d, trashRows = %+v", sp.trashRows)
+	}
+	if sp.trashConfirmID == "" {
+		t.Fatal("expected trashConfirmID set after the first d")
+	}
+	if _, err := os.Stat(trashPath); err != nil {
+		t.Errorf("expected the trash file to still exist after a single d: %v", err)
+	}
+
+	m = step(t, m, key("d"), "d (confirm permanent delete)")
+	sp = m.splits[m.activeSplit]
+	if len(sp.trashRows) != 0 {
+		t.Fatalf("expected the row gone after the second d, trashRows = %+v", sp.trashRows)
+	}
+	if _, err := os.Stat(trashPath); !os.IsNotExist(err) {
+		t.Errorf("expected the trash file removed, stat err = %v", err)
+	}
+	entries, _ := m.vault.ListTrash()
+	if len(entries) != 0 {
+		t.Errorf("expected the sidecar entry removed too, got %+v", entries)
+	}
+}
+
+// TestHeadlessTrashOtherKeyCancelsConfirm covers the confirm's cancel path:
+// any key other than a repeated "d" on the same row clears the pending
+// confirm without deleting anything.
+func TestHeadlessTrashOtherKeyCancelsConfirm(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("Reprieve")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.cmdDelete([]string{"Reprieve"})
+	m.openTrashView()
+
+	m = step(t, m, key("d"), "d (request confirm)")
+	if m.splits[m.activeSplit].trashConfirmID == "" {
+		t.Fatal("expected trashConfirmID set after d")
+	}
+
+	m = step(t, m, key("j"), "j (any other key cancels the confirm)")
+	sp := m.splits[m.activeSplit]
+	if sp.trashConfirmID != "" {
+		t.Error("expected trashConfirmID cleared after a non-d key")
+	}
+	if len(sp.trashRows) != 1 {
+		t.Errorf("expected the row untouched, trashRows = %+v", sp.trashRows)
+	}
+}
+
+// TestHeadlessTrashEmptyStateNoPanic covers the empty-trash render path.
+func TestHeadlessTrashEmptyStateNoPanic(t *testing.T) {
+	m := setupTUI(t)
+	m.openTrashView()
+	sp := m.splits[m.activeSplit]
+	if len(sp.trashRows) != 0 {
+		t.Fatalf("expected empty trash, got %+v", sp.trashRows)
+	}
+	out := renderTrash(sp.trashRows, m.cfg.TrashRetentionDays, 60, 10, 0, 0, "", true)
+	if !strings.Contains(xansi.Strip(out), "empty") {
+		t.Errorf("expected an empty-state message, got:\n%s", xansi.Strip(out))
 	}
 }
 

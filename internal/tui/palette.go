@@ -87,7 +87,7 @@ var allCommands = []cmdDef{
 		slots:   []slotKind{slotNote},
 	},
 	{
-		name: "delete", sig: "<note>", desc: "Permanently delete a note (Ctrl+Z to undo)",
+		name: "delete", sig: "<note>", desc: "Move a note to trash (Ctrl+Z to undo immediately, :trash to recover later)",
 		example: `:delete docker`,
 		slots:   []slotKind{slotNote},
 	},
@@ -128,6 +128,13 @@ var allCommands = []cmdDef{
 		sig:     "",
 		desc:    "Show every task in the vault, grouped by project then file",
 		example: `:tasks`,
+		slots:   []slotKind{},
+	},
+	{
+		name:    "trash",
+		sig:     "",
+		desc:    "List deleted notes; Enter restores, d permanently deletes",
+		example: `:trash`,
 		slots:   []slotKind{},
 	},
 	{

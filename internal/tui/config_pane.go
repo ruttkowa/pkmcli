@@ -16,6 +16,7 @@ const (
 	cfgItemLineNumbers
 	cfgItemShowTasksNav
 	cfgItemShowTemplatesNav
+	cfgItemTrashRetention
 )
 
 type configItem struct {
@@ -30,7 +31,16 @@ var configItems = []configItem{
 	{label: "Line numbers", options: []string{"on", "off"}},
 	{label: "Show Tasks nav", options: []string{"on", "off"}},
 	{label: "Show Templates nav", options: []string{"on", "off"}},
+	{label: "Trash retention", options: []string{"7 days", "14 days", "30 days", "60 days", "90 days"}},
 }
+
+// trashRetentionDaysOptions is the numeric value (#1's TrashRetentionDays)
+// backing each configItems[cfgItemTrashRetention].options entry, at the
+// same index — this General-section row reuses the existing fixed-choice
+// cycling UI (every other row already works this way) rather than
+// introducing a free-numeric-input widget the codebase has no precedent
+// for, while still storing/producing a plain integer day count.
+var trashRetentionDaysOptions = []int{7, 14, 30, 60, 90}
 
 // cfgLabelWidth is wide enough to cover the longest label ("Show Templates nav" = 19) plus
 // the "▶ " cursor prefix (2) and two spaces of padding.
@@ -116,6 +126,14 @@ func newConfigPane(cfg AppConfig) configPane {
 
 	if !cfg.ShowTemplatesNav {
 		v[cfgItemShowTemplatesNav] = 1
+	}
+
+	v[cfgItemTrashRetention] = 2 // default: 30 days
+	for i, d := range trashRetentionDaysOptions {
+		if d == cfg.TrashRetentionDays {
+			v[cfgItemTrashRetention] = i
+			break
+		}
 	}
 
 	var vars []variableEntry

@@ -73,6 +73,8 @@ func (m *Model) handleCommand(raw string) (string, tea.Cmd) {
 		return m.cmdExport(args)
 	case "tasks":
 		return m.cmdTasks()
+	case "trash":
+		return m.cmdTrash()
 	case "help":
 		return m.cmdHelp()
 	case "quit", "exit", "q":
@@ -257,9 +259,11 @@ func (m *Model) cmdArchive(args []string) (string, tea.Cmd) {
 	return refreshCounts(m), nil
 }
 
-// cmdDelete permanently removes a note's file from the vault. The note is
-// snapshotted to the undo stack first (Save recreates the file), so Ctrl+Z
-// is the safety net rather than a confirmation prompt.
+// cmdDelete moves a note's file into the vault's trash (#1) instead of
+// permanently removing it — recoverable via :trash within the configured
+// retention window. The note is also snapshotted to the undo stack (Save
+// recreates it at its original path), so Ctrl+Z right after deleting is the
+// immediate safety net; trash is the durable one.
 func (m *Model) cmdDelete(args []string) (string, tea.Cmd) {
 	if len(args) == 0 {
 		return "usage: :delete <note>", nil
@@ -273,13 +277,13 @@ func (m *Model) cmdDelete(args []string) (string, tea.Cmd) {
 		m.recordDetach(n)
 	}
 	oldNote := *n
-	if err := m.vault.Delete(n); err != nil {
+	if err := m.vault.Trash(n); err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
 	m.index.Delete(n.ID)
 	delete(m.titleSet, strings.ToLower(n.Title))
 
-	m.undoStack = append(m.undoStack, undoRecord{oldNote: oldNote, newNote: oldNote})
+	m.undoStack = append(m.undoStack, undoRecord{oldNote: oldNote, newNote: oldNote, isDelete: true})
 	if len(m.undoStack) > 20 {
 		m.undoStack = m.undoStack[1:]
 	}
@@ -650,6 +654,12 @@ func (m *Model) cmdNewTemplate(args []string) (string, tea.Cmd) {
 
 func (m *Model) cmdTasks() (string, tea.Cmd) {
 	m.openTasksOverview()
+	return "", nil
+}
+
+// cmdTrash opens #1's recovery list (Enter restores, d permanently deletes).
+func (m *Model) cmdTrash() (string, tea.Cmd) {
+	m.openTrashView()
 	return "", nil
 }
 

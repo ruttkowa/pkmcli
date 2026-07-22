@@ -28,6 +28,13 @@ type splitPane struct {
 	taskScrollOff int
 	taskCursorRow int
 
+	// trash view (#1, assembled once on entry, same convention as the task
+	// overview above)
+	trashRows      []vault.TrashEntry
+	trashScrollOff int
+	trashCursorRow int
+	trashConfirmID string // entry ID awaiting a second "d" to confirm permanent delete; "" = no pending confirm
+
 	// searchReturn is non-nil when the note currently open (or the one at
 	// the root of this split's history) was opened from a search results
 	// list — once real history is exhausted, "back" restores this list

@@ -27,11 +27,19 @@ const (
 	viewHelp
 	viewSectionLanding
 	viewTasksOverview
+	viewTrash
 )
 
 type undoRecord struct {
 	oldNote vault.Note
 	newNote vault.Note
+	// isDelete marks a :delete's undo record (#1): oldNote == newNote here
+	// (there's no "new" content, only "gone"). Undo/redo for these must
+	// also manage the trash file/sidecar entry, not just Save — a generic
+	// Save-based undo would recreate the note while leaving an orphaned
+	// copy behind in trash, and a generic Save-based redo would recreate
+	// the note instead of re-trashing it. See handleUndo/handleRedo.
+	isDelete bool
 }
 
 type tickMsg time.Time
@@ -252,6 +260,11 @@ func New(v *vault.Vault, idx *index.Index) Model {
 	m.cfg = cfg
 	m.sidebar.showTasksNav = cfg.ShowTasksNav
 	m.sidebar.showTemplatesNav = cfg.ShowTemplatesNav
+
+	// #1: purge trash entries past retention, once at process start —
+	// mirrors the startup index-validation scan (CLAUDE.md "Index
+	// Architecture"), no timer/background polling.
+	v.PurgeExpired(cfg.TrashRetentionDays)
 
 	activeTheme = NordTheme // default if theme name not recognized
 	for _, t := range ThemeChoices {
@@ -782,6 +795,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
+			case viewTrash:
+				// Any key other than a repeated "d" on the same row cancels
+				// a pending permanent-delete confirm (footer line, not a
+				// modal — same convention as :export's overwrite confirm).
+				if msg.String() != "d" && sp.trashConfirmID != "" {
+					sp.trashConfirmID = ""
+				}
+				switch msg.String() {
+				case "esc", "backspace":
+					sp.activeView = viewList
+				case "j", "down":
+					if sp.trashCursorRow < len(sp.trashRows)-1 {
+						sp.trashCursorRow++
+					}
+					m.followTrashCursor(sp)
+				case "k", "up":
+					if sp.trashCursorRow > 0 {
+						sp.trashCursorRow--
+					}
+					m.followTrashCursor(sp)
+				case "g":
+					sp.trashCursorRow = 0
+					sp.trashScrollOff = 0
+				case "G":
+					sp.trashCursorRow = len(sp.trashRows) - 1
+					m.followTrashCursor(sp)
+				case "enter":
+					m.restoreTrashEntry(sp)
+				case "d":
+					if sp.trashCursorRow >= 0 && sp.trashCursorRow < len(sp.trashRows) {
+						id := sp.trashRows[sp.trashCursorRow].ID
+						if sp.trashConfirmID == id {
+							m.permanentlyDeleteTrashEntry(sp)
+						} else {
+							sp.trashConfirmID = id
+						}
+					}
+				}
 			case viewHelp:
 				switch msg.String() {
 				case "esc", "backspace", "?":
@@ -887,6 +938,10 @@ func (m *Model) applyConfigItem(itemIdx, valueIdx int) {
 		m.cfg.ShowTemplatesNav = valueIdx == 0
 		m.sidebar.showTemplatesNav = m.cfg.ShowTemplatesNav
 		m.sidebar.clampCursor()
+	case cfgItemTrashRetention:
+		if valueIdx >= 0 && valueIdx < len(trashRetentionDaysOptions) {
+			m.cfg.TrashRetentionDays = trashRetentionDaysOptions[valueIdx]
+		}
 	}
 }
 
@@ -1419,6 +1474,8 @@ func (m Model) renderSplits(l layout) string {
 			content = sp.sectionLanding.render(pi, l.contentHeight)
 		case viewTasksOverview:
 			content = renderTaskOverview(sp.taskRows, pi, l.contentHeight, sp.taskScrollOff, sp.taskCursorRow, focused)
+		case viewTrash:
+			content = renderTrash(sp.trashRows, m.cfg.TrashRetentionDays, pi, l.contentHeight, sp.trashScrollOff, sp.trashCursorRow, sp.trashConfirmID, focused)
 		}
 
 		borderColor := activeTheme.BorderNormal
@@ -1462,6 +1519,8 @@ func (m Model) renderBreadcrumb() string {
 		title += "  ›  Projects"
 	case viewTasksOverview:
 		title += "  ›  Tasks"
+	case viewTrash:
+		title += "  ›  Trash"
 	case viewHelp:
 		title += "  ›  Help"
 	case viewSectionLanding:
@@ -1720,6 +1779,82 @@ func (m *Model) followTaskCursor(sp *splitPane) {
 	}
 }
 
+// openTrashView assembles #1's trash list (a fresh sidecar read, same
+// per-view-open convention as openTasksOverview — there is no persistent
+// trash index either) and switches the active split to it.
+func (m *Model) openTrashView() {
+	sp := &m.splits[m.activeSplit]
+	entries, _ := m.vault.ListTrash()
+	sp.trashRows = entries
+	sp.trashScrollOff = 0
+	sp.trashCursorRow = 0
+	sp.trashConfirmID = ""
+	sp.activeView = viewTrash
+	m.activePane = paneMain
+}
+
+// followTrashCursor adjusts sp.trashScrollOff so trashCursorRow stays
+// within the visible window, mirroring followTaskCursor.
+func (m *Model) followTrashCursor(sp *splitPane) {
+	rows := m.computeLayout().contentHeight
+	if sp.trashCursorRow < sp.trashScrollOff {
+		sp.trashScrollOff = sp.trashCursorRow
+	} else if sp.trashCursorRow >= sp.trashScrollOff+rows {
+		sp.trashScrollOff = sp.trashCursorRow - rows + 1
+	}
+	if sp.trashScrollOff < 0 {
+		sp.trashScrollOff = 0
+	}
+}
+
+// restoreTrashEntry restores the trash row under the cursor, reindexes the
+// recovered note, and refreshes the list in place (rather than reopening
+// the view) so the cursor position stays sensible after a row disappears.
+func (m *Model) restoreTrashEntry(sp *splitPane) {
+	if sp.trashCursorRow < 0 || sp.trashCursorRow >= len(sp.trashRows) {
+		return
+	}
+	entry := sp.trashRows[sp.trashCursorRow]
+	n, err := m.vault.Restore(entry)
+	if err != nil {
+		m.statusMsg = "restore error: " + err.Error()
+		return
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+	refreshCounts(m)
+
+	entries, _ := m.vault.ListTrash()
+	sp.trashRows = entries
+	sp.trashConfirmID = ""
+	if sp.trashCursorRow >= len(sp.trashRows) {
+		sp.trashCursorRow = max(0, len(sp.trashRows)-1)
+	}
+	m.statusMsg = "restored: " + n.Title
+}
+
+// permanentlyDeleteTrashEntry removes the trash row under the cursor for
+// good — only called once the footer confirm ("press d again") has already
+// matched this row's ID, per cmdDelete's own "safety net, not a modal"
+// convention used throughout this app.
+func (m *Model) permanentlyDeleteTrashEntry(sp *splitPane) {
+	if sp.trashCursorRow < 0 || sp.trashCursorRow >= len(sp.trashRows) {
+		return
+	}
+	entry := sp.trashRows[sp.trashCursorRow]
+	if err := m.vault.RemoveTrashEntry(entry.ID); err != nil {
+		m.statusMsg = "delete error: " + err.Error()
+		return
+	}
+	sp.trashConfirmID = ""
+	entries, _ := m.vault.ListTrash()
+	sp.trashRows = entries
+	if sp.trashCursorRow >= len(sp.trashRows) {
+		sp.trashCursorRow = max(0, len(sp.trashRows)-1)
+	}
+	m.statusMsg = "permanently deleted: " + entry.Title
+}
+
 func (m *Model) handleUndo() {
 	if len(m.undoStack) == 0 {
 		m.statusMsg = "nothing to undo"
@@ -1732,6 +1867,15 @@ func (m *Model) handleUndo() {
 		m.statusMsg = "undo error: " + err.Error()
 		return
 	}
+	trashWarning := ""
+	if rec.isDelete {
+		// #1: Save above just recreated the note at its original path; the
+		// trashed copy and its sidecar entry are now an orphan (the same
+		// note existing twice) unless removed here too.
+		if err := m.vault.RemoveTrashEntry(old.ID); err != nil {
+			trashWarning = "undo warning: trash cleanup failed: " + err.Error()
+		}
+	}
 	m.index.Upsert(&old)
 	m.titleSet[strings.ToLower(old.Title)] = true
 	l := m.computeLayout()
@@ -1742,7 +1886,11 @@ func (m *Model) handleUndo() {
 		}
 	}
 	m.redoStack = append(m.redoStack, rec)
-	m.statusMsg = "undone"
+	if trashWarning != "" {
+		m.statusMsg = trashWarning
+	} else {
+		m.statusMsg = "undone"
+	}
 }
 
 func (m *Model) handleRedo() {
@@ -1752,6 +1900,10 @@ func (m *Model) handleRedo() {
 	}
 	rec := m.redoStack[len(m.redoStack)-1]
 	m.redoStack = m.redoStack[:len(m.redoStack)-1]
+	if rec.isDelete {
+		m.redoDelete(rec)
+		return
+	}
 	next := rec.newNote
 	if err := m.vault.Save(&next); err != nil {
 		m.statusMsg = "redo error: " + err.Error()
@@ -1765,6 +1917,36 @@ func (m *Model) handleRedo() {
 			m.splits[i].viewer = m.splits[i].viewer.preRender(l.paneWidth, m.titleSet)
 		}
 	}
+	m.undoStack = append(m.undoStack, rec)
+	m.statusMsg = "redone"
+}
+
+// redoDelete re-applies a :delete that was undone (#1). A generic Save
+// (what handleRedo does for every other action) would recreate the note
+// instead of re-trashing it — newNote == oldNote for a delete record (see
+// undoRecord.isDelete), so there's no "new content" to save, only "gone
+// again". Mirrors cmdDelete's exact side effects rather than duplicating a
+// divergent path.
+func (m *Model) redoDelete(rec undoRecord) {
+	next := rec.newNote
+	if next.State == vault.StateProjects && next.Project != "" {
+		m.recordDetach(&next)
+	}
+	if err := m.vault.Trash(&next); err != nil {
+		m.statusMsg = "redo error: " + err.Error()
+		return
+	}
+	m.index.Delete(next.ID)
+	delete(m.titleSet, strings.ToLower(next.Title))
+	for i := range m.splits {
+		if m.splits[i].viewer.note != nil && m.splits[i].viewer.note.ID == next.ID {
+			m.splits[i].activeView = viewList
+			m.splits[i].viewer = newViewer()
+			m.splits[i].history = nil
+			m.splits[i].histIdx = -1
+		}
+	}
+	refreshCounts(m)
 	m.undoStack = append(m.undoStack, rec)
 	m.statusMsg = "redone"
 }

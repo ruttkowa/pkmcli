@@ -104,6 +104,18 @@ TASK OVERVIEW  —  :tasks or the sidebar's Tasks row
   Enter         open the source note of the task under the cursor
   Esc           close, back to the note list
 
+TRASH  —  :trash
+  :delete moves a note here instead of removing it outright — recoverable
+  for a configurable retention window (default 30 days, :config → General).
+  Purged automatically on a future startup once past that window.
+  j/k or ↓/↑    move the row cursor
+  g / G         jump to first / last row
+  Enter         restore the note (falls back to Inbox if its project is
+                gone)
+  d             permanently delete — press again to confirm (footer line,
+                not a popup); any other key cancels. Irreversible.
+  Esc           close, back to the note list
+
 COMMAND PALETTE  —  press : or Ctrl+Space to open
   :new "Title"              create note in Inbox
   :new project <name>       create a new project (does not assign the open note)
@@ -119,13 +131,16 @@ COMMAND PALETTE  —  press : or Ctrl+Space to open
                             opened this way returns to that list)
   :move <note> → <state>    move note to a state
   :archive <note>           archive a note
-  :delete <note>            permanently delete a note (Ctrl+Z to undo)
+  :delete <note>            move a note to trash (Ctrl+Z undoes it
+                            immediately; :trash recovers it later)
   :import [path]            open the import popover (path autocomplete,
                             move/copy toggle, destination state)
   :export [path]            open the export popover (path autocomplete,
                             prefilled with the open note's filename)
   :tasks                    show every task in the vault, grouped by
                             project then file (also in the sidebar)
+  :trash                    list deleted notes; Enter restores, d
+                            permanently deletes
   :split [note]             open a new side-by-side pane
   :close                    close the focused pane
   :config                   open settings (General / Keybindings / Variables)

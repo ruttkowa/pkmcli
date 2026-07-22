@@ -258,6 +258,22 @@ Opened with `:tasks` or the sidebar's **Tasks** row (below `#templates`; shown b
 
 The overview is assembled fresh each time it's opened (there's no persistent task index yet), so it always reflects the vault as it is right now.
 
+### Trash
+
+`:delete` doesn't remove a note immediately — it moves the file into `<vault>/.pkm/trash/` and records it in `.pkm/trash.json`, recoverable for a configurable retention window (default 30 days, see [Configuration](#configuration)). `Ctrl+Z` right after deleting still works exactly as before, as the immediate safety net; trash is the durable one, for whenever you notice later. Past its retention window, a trashed note is permanently purged the next time pkm starts (no background timer).
+
+Opened with `:trash`. Each row shows the note's title, how long ago it was deleted, and how many days are left before it's purged.
+
+| Key | Action |
+|---|---|
+| `j` / `↓`, `k` / `↑` | Move the row cursor |
+| `g` / `G` | Jump to the first / last row |
+| `Enter` | Restore the note under the cursor to its original location (falls back to Inbox if its project no longer exists) |
+| `d` | Permanently delete the note under the cursor — press again to confirm (footer line, not a popup); any other key cancels the confirm. Irreversible: no undo record, since the note already had its `Ctrl+Z` chance. |
+| `Esc` / `Backspace` | Close and return to the note list |
+
+Like the Task Overview, the list is read fresh from `.pkm/trash.json` each time it's opened.
+
 ### Config Overlay
 
 Opened with `:config`. `Tab` / `Shift+Tab` cycle its three tabs; `Esc` saves everything and closes, from any tab (while capturing a keybind or editing a variable, `Esc` cancels just that instead — see below).
@@ -349,10 +365,11 @@ The verb list reorders a little depending on where you opened it from — e.g. o
 | `:search <query>` | Fuzzy search titles and content, with a live-ranked dropdown as you type | — |
 | `:move <note> → <state>` | Move a note to a state (`->` also accepted) | `M` |
 | `:archive <note>` | Shortcut for `:move <note> → archive` | `A` |
-| `:delete <note>` | Permanently delete a note (`Ctrl+Z` undoes it — see note below) | `D` |
+| `:delete <note>` | Move a note to trash (`Ctrl+Z` undoes it immediately — see note below) | `D` |
 | `:import [path]` | Open the import popover (path pre-filled if given) — see note below | `I` (opens directly, no palette) |
 | `:export [path]` | Open the export popover, prefilled with the open note's filename — see note below | — |
 | `:tasks` | Show every task in the vault, grouped by project then file | — |
+| `:trash` | List deleted notes; `Enter` restores, `d` permanently deletes — see [Trash](#trash) | — |
 | `:split [note]` | Open a new side-by-side pane, optionally pre-loaded | — |
 | `:close` | Close the focused pane (blocked if it's the last one) | — |
 | `:theme <name>` | `nord` · `solarized` · `dracula` · `gruvbox` · `tokyonight` | — |
@@ -370,7 +387,7 @@ The verb list reorders a little depending on where you opened it from — e.g. o
 
 **`:search` resolution:** the dropdown ranks fuzzy title matches first, then plain content matches, live as you type. Arrow to a hit and press `Enter` to open it directly; press `Enter` without arrowing to open every hit as a list instead. `Esc` out of a note opened either way returns to that list — not a fresh search.
 
-**`:delete` is permanent** (the file is removed from disk) but safety-netted: it's pushed onto the same undo stack as edits, so `Ctrl+Z` immediately after recreates the file. There's no confirmation prompt, so double-check the note name in the palette before pressing Enter.
+**`:delete` moves the note to trash**, not a permanent removal — see [Trash](#trash). It's *also* pushed onto the same undo stack as edits, so `Ctrl+Z` immediately after recreates the file without even going through the trash/recovery flow. There's no confirmation prompt, so double-check the note name in the palette before pressing Enter; `:trash` and its retention window are the safety net for everything after that immediate undo window closes.
 
 **`:import`** reads an external `.md` file and adds it as a new note — see [Import Popover](#import-popover) for the full field-by-field walkthrough. Default is **Move** (the source file is deleted after a successful import); toggle to **Copy** with `Space` on the Mode field to leave the source in place.
 
@@ -538,8 +555,12 @@ vault/
 └── .pkm/
     ├── config.yaml
     ├── projects.yaml
-    └── index.db   ← SQLite search index
+    ├── index.db     ← SQLite search index
+    ├── trash.json   ← sidecar index for :delete'd notes (see Trash)
+    └── trash/       ← the deleted notes' .md files, unmodified
 ```
+
+If you keep your vault in git, add `.pkm/trash/` and `trash.json` to its `.gitignore` — deleted notes and their metadata aren't meant to be tracked history.
 
 No content-based folder hierarchy — organization is through metadata, tags, and states.
 
@@ -559,8 +580,11 @@ Open the config menu with `:config` (see [Config Overlay](#config-overlay) for t
 | Line numbers | on, off | on |
 | Show Tasks nav | on, off | on |
 | Show Templates nav | on, off | on |
+| Trash retention | 7, 14, 30, 60, 90 days | 30 days |
 
 Session state (last open note, active section) is saved on quit and restored on next launch when "Restore session" is on.
+
+"Trash retention" controls how long a `:delete`d note stays recoverable in `:trash` (see [Trash](#trash)) before being purged on a future startup.
 
 "Show Tasks nav" and "Show Templates nav" control whether the sidebar's **Tasks** row and `#templates` section are shown at all — independent of each other, and applied live the moment you toggle them (no need to close the overlay first).
 

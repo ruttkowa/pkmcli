@@ -442,9 +442,86 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   (Project) was focused did nothing — the key fell through to that
   field's own input instead.
 
+### Added (issue batch, 2026-07-22)
+- **Trash / soft-delete with configurable retention.** `:delete` (and `D`)
+  now move a note into `<vault>/.pkm/trash/` instead of permanently
+  removing it, recorded in a `.pkm/trash.json` sidecar (`deleted_at`,
+  original path, and the state/project it had) — the note's own
+  frontmatter is untouched, per the locked decision to keep `spec.html`'s
+  schema unchanged. Recoverable via the new `:trash` command (a list view
+  modeled on the Task Overview: `j`/`k`/`g`/`G` to navigate, `Enter`
+  restores to the original location — or Inbox if its project no longer
+  exists — `d` permanently deletes after a second `d` confirms via a
+  footer line, no modal). Past its retention window (`:config` → General
+  → "Trash retention", default 30 days, presets 7/14/30/60/90), a trashed
+  note is purged automatically the next time pkm starts — no background
+  timer, mirrors the existing startup index-validation scan.
+  `internal/vault/trash.go` (`Trash`, `ListTrash`, `Restore`,
+  `PurgeExpired`, `RemoveTrashEntry`), `internal/tui/trash_view.go`,
+  `internal/tui/commands.go` (`cmdTrash`, `cmdDelete` updated),
+  `internal/tui/appconfig.go` (`TrashRetentionDays`, config version 2).
+  **The existing Ctrl+Z undo stack for `:delete` stays, unchanged in
+  spirit** (locked decision: durable trash net + immediate undo net,
+  not one replacing the other) — but undo/redo needed real surgery to
+  stay correct once "delete" stopped meaning "gone": a generic
+  Save-based undo would recreate the note while leaving an orphaned
+  trash copy and sidecar entry behind (the note existing twice), and a
+  generic Save-based redo would recreate the note instead of re-trashing
+  it. `undoRecord` gained an `isDelete` flag; `handleUndo` now also calls
+  `RemoveTrashEntry` for a delete record, and redo of a delete routes
+  through a new `redoDelete` that calls `vault.Trash` again (mirroring
+  `cmdDelete`'s exact side effects) instead of the generic redo path.
+  Root-caused from the qualification's own explicit "Nachtrag" —
+  written into the spec before implementation started, not discovered
+  the hard way.
+
+### Verify
+- `go test ./...` — clean, including `TestHeadlessDeleteThenUndo`
+  unchanged and still green (an explicit requirement — undo's existing
+  contract had to keep working exactly as before).
+- `internal/vault/trash_test.go`: `TestTrashMovesFileAndRecordsSidecarEntry`,
+  `TestTrashCollisionAppendsSuffix`,
+  `TestRestoreReturnsNoteToOrigPathWithOldState`,
+  `TestRestoreCollisionAtOrigPathUsesSuffixedName`,
+  `TestRestoreFallsBackToInboxWhenProjectGone`,
+  `TestPurgeExpiredOnlyRemovesPastRetention`,
+  `TestPurgeExpiredNonPositiveRetentionFallsBackToDefault` (a `<=0`
+  retention value must never mean "purge immediately"),
+  `TestRemoveTrashEntryDeletesFileAndEntry`,
+  `TestRemoveTrashEntryUnknownIDIsNoop`.
+- `internal/tui/tui_test.go`: `TestHeadlessDeleteThenUndoLeavesTrashEmpty`
+  (the orphan-copy trap), `TestHeadlessDeleteUndoRedoReTrashesExactlyOnce`
+  (the "Nachtrag" redo trap — exactly one trash file, exactly one sidecar
+  entry after undo→redo), `TestDefaultConfigTrashRetentionDaysIs30`,
+  `TestFillConfigDefaultsSetsRetentionForOldConfig`,
+  `TestApplyConfigItemChangesTrashRetentionDays`,
+  `TestHeadlessTrashCommandListsAndRestores`,
+  `TestHeadlessTrashPermanentDeleteRequiresConfirm`,
+  `TestHeadlessTrashOtherKeyCancelsConfirm`,
+  `TestHeadlessTrashEmptyStateNoPanic`.
+- Manual (tmux): created and deleted a note — file confirmed moved into
+  `.pkm/trash/` with a matching sidecar entry (inspected both directly on
+  disk); `:trash` listed it with "deleted today · 30 days left"; a single
+  `d` showed the footer confirm without deleting, a different key
+  cancelled it, a second `d` permanently deleted it (file and sidecar
+  entry both gone); `Enter` on a second trashed note restored it (file
+  back at its original path, sidecar entry cleared) — confirmed via an
+  accidental double-Enter during testing, which doubled as an unplanned
+  but valid end-to-end check. Cycled "Trash retention" in `:config` from
+  30 → 14 days, saved, confirmed `trash_retention_days: 14` written to
+  `config.yaml`. Backdated a trashed entry's `deleted_at` past the new
+  14-day retention, restarted the app, confirmed it was purged
+  automatically on startup with no timer needed. Separately, deleted a
+  note and pressed `Ctrl+Z` immediately — confirmed the note reappeared
+  at its original path *and* the trash file/sidecar entry were cleaned
+  up, not left behind as an orphan.
+- README ("Trash" section, Configuration table, vault structure tree,
+  `:delete`/`:trash` command table rows), `help_view.go` (TRASH section,
+  command list), `.gitignore` (`.pkm/trash/`, `trash.json`) updated.
+
 Remaining backlog tracked as GitHub issues (repo `ruttkowa/pkmcli`):
-soft-delete/trash (#1), text selection + copy/paste (#2), hotkey-bar
-grouping (#3), GitLab Issues integration (#15).
+text selection + copy/paste (#2), hotkey-bar grouping (#3), GitLab
+Issues integration (#15).
 
 ## [0.1.0] - 2026-07-08
 

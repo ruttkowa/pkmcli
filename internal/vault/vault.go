@@ -114,11 +114,6 @@ func (v *Vault) Save(n *Note) error {
 	return os.WriteFile(n.Path, data, 0o644)
 }
 
-// Delete removes a note's file from disk.
-func (v *Vault) Delete(n *Note) error {
-	return os.Remove(n.Path)
-}
-
 // Load reads a single .md file and returns a Note.
 func (v *Vault) Load(path string) (*Note, error) {
 	data, err := os.ReadFile(path)
