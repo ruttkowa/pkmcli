@@ -2493,6 +2493,103 @@ func TestHeadlessMouseDragSelectReleaseCopiesOnce(t *testing.T) {
 	}
 }
 
+// TestHeadlessTooltipBarViewModeGroupsShiftBeforeCtrl covers #3: at a
+// normal width, the default (View-mode-ish) tooltip bar groups Shift
+// shortcuts before Ctrl shortcuts, with the unbound ":"/"?" keys last.
+func TestHeadlessTooltipBarViewModeGroupsShiftBeforeCtrl(t *testing.T) {
+	m := setupTUI(t)
+	m.width = 150
+	bar := xansi.Strip(m.renderTooltipBar())
+
+	shiftIdx := strings.Index(bar, "SHIFT +")
+	ctrlIdx := strings.Index(bar, "CTRL +")
+	colonIdx := strings.Index(bar, ":")
+	if shiftIdx < 0 || ctrlIdx < 0 {
+		t.Fatalf("expected both group labels present at width=150, bar=%q", bar)
+	}
+	if shiftIdx >= ctrlIdx {
+		t.Errorf("expected SHIFT group before CTRL group in View mode, got SHIFT at %d, CTRL at %d (bar=%q)", shiftIdx, ctrlIdx, bar)
+	}
+	if colonIdx < ctrlIdx {
+		t.Errorf("expected the unbound \":\" key after both groups, got it at %d, CTRL group at %d (bar=%q)", colonIdx, ctrlIdx, bar)
+	}
+	for _, want := range []string{"N", "A", "D", "M", "O", "T", "P", "^P", "^Q", "?"} {
+		if !strings.Contains(bar, want) {
+			t.Errorf("bar missing expected chip %q: %q", want, bar)
+		}
+	}
+}
+
+// TestHeadlessTooltipBarEditModeGroupsCtrlFirst covers #3: Edit mode leans
+// on Ctrl shortcuts, so its group goes first, with the unbound Tab/Esc
+// chips last and no Shift group (edit mode has none in the tooltip bar).
+func TestHeadlessTooltipBarEditModeGroupsCtrlFirst(t *testing.T) {
+	m := setupTUI(t)
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 150, Height: 40})
+	m = model.(Model)
+	n, err := m.vault.Create("EditBar")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	sp := &m.splits[m.activeSplit]
+	sp.openNote(n)
+	m.activePane = paneMain
+	m = step(t, m, key("e"), "e (open editor)")
+	if m.splits[m.activeSplit].activeView != viewEdit {
+		t.Fatalf("expected viewEdit after pressing e, got %v", m.splits[m.activeSplit].activeView)
+	}
+
+	bar := xansi.Strip(m.renderTooltipBar())
+	ctrlIdx := strings.Index(bar, "CTRL +")
+	tabIdx := strings.Index(bar, "Tab")
+	if ctrlIdx < 0 {
+		t.Fatalf("expected a CTRL + group label in edit mode, bar=%q", bar)
+	}
+	if tabIdx < ctrlIdx {
+		t.Errorf("expected the unbound Tab/Esc chips after the CTRL group, got Tab at %d, CTRL group at %d (bar=%q)", tabIdx, ctrlIdx, bar)
+	}
+	for _, want := range []string{"^S", "^C", "Tab", "Esc"} {
+		if !strings.Contains(bar, want) {
+			t.Errorf("bar missing expected chip %q: %q", want, bar)
+		}
+	}
+}
+
+// TestHeadlessTooltipBarNarrowWidthDropsGroupLabels covers #3's fallback:
+// below tooltipGroupMinWidth, the group labels disappear entirely — the
+// bar is already too narrow to show every chip regardless of grouping (the
+// tail still gets truncated by fitTooltipBar, same as before #3), but the
+// label text itself must not be what's eating the room, so the chips that
+// do fit (the front of the primary group) must still be there.
+func TestHeadlessTooltipBarNarrowWidthDropsGroupLabels(t *testing.T) {
+	m := setupTUI(t)
+	m.width = 60
+	bar := xansi.Strip(m.renderTooltipBar())
+
+	if strings.Contains(bar, "SHIFT +") || strings.Contains(bar, "CTRL +") {
+		t.Errorf("expected no group labels below tooltipGroupMinWidth, got %q", bar)
+	}
+	for _, want := range []string{"N", "A", "D"} {
+		if !strings.Contains(bar, want) {
+			t.Errorf("narrow bar missing expected chip %q: %q", want, bar)
+		}
+	}
+}
+
+// TestHeadlessTooltipBarNeverExceedsWidth guards fitTooltipBar's hard
+// truncation still holds after #3's regrouping — the bar must never wrap
+// to a second line regardless of width or mode.
+func TestHeadlessTooltipBarNeverExceedsWidth(t *testing.T) {
+	for _, w := range []int{40, 60, 79, 80, 100, 150, 220} {
+		m := setupTUI(t)
+		m.width = w
+		bar := m.renderTooltipBar()
+		if got := xansi.StringWidth(bar); got > w {
+			t.Errorf("width=%d: rendered bar width=%d, want <= %d (bar=%q)", w, got, w, xansi.Strip(bar))
+		}
+	}
+}
+
 // TestProjectDetailBridgeEntryDoesNotLeak guards against a regression where
 // the project-detail bridge-entry text field had no early-return guard (unlike
 // Editor/Palette/Config/PanePicker), so global Shift-hotkeys and "?" and ":"

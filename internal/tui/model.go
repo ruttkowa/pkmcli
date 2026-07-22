@@ -1767,17 +1767,18 @@ func (m Model) renderTooltipBar() string {
 		return fitTooltipBar(bar, m.width)
 	}
 
-	// Edit mode: show edit-specific hints.
+	// Edit mode: show edit-specific hints. Edit mode leans on Ctrl
+	// shortcuts, so its group goes first (#3); Tab/Esc are unbound plain
+	// keys, so they're an unlabeled group at the end.
 	if m.activePane == paneMain && len(m.splits) > 0 && m.splits[m.activeSplit].activeView == viewEdit {
-		bar := strings.Join([]string{chip(keyChipLabel(m.cfg.Keymap.Save), "save"), chip(keyChipLabel(m.cfg.Keymap.Palette), "command"), chip("Tab", "cycle fields"), chip("Esc", "save & close"), chip("^C", "quit")}, " ")
+		ctrlChips := strings.Join([]string{
+			chip(keyChipLabel(m.cfg.Keymap.Save), "save"),
+			chip(keyChipLabel(m.cfg.Keymap.Palette), "command"),
+			chip("^C", "quit"),
+		}, " ")
+		plainChips := strings.Join([]string{chip("Tab", "cycle fields"), chip("Esc", "save & close")}, " ")
+		bar := joinGroups(m.labeledGroup("CTRL +", ctrlChips), plainChips)
 		return fitTooltipBar(bar, m.width)
-	}
-
-	// Group label style for SHIFT+ / CTRL+ prefixes.
-	grp := func(s string) string {
-		return lipgloss.NewStyle().
-			Foreground(activeTheme.TextMuted).
-			Render(s)
 	}
 
 	shiftChips := strings.Join([]string{
@@ -1802,10 +1803,46 @@ func (m Model) renderTooltipBar() string {
 	}
 	ctrlChips := strings.Join(ctrlParts, " ")
 
-	bar := chip(":", "command") + "  " + chip("?", "help") + "   " +
-		grp("SHIFT +") + " " + shiftChips + "   " +
-		grp("CTRL +") + " " + ctrlChips
+	plainChips := chip(":", "command") + "  " + chip("?", "help")
+
+	// This default bar covers every mode besides Edit and the modal
+	// overlays above (List, Note Viewer, Trash, Project Detail, ...) —
+	// loosely "View mode" in #3's terms, which leans on Shift shortcuts,
+	// so that group goes first; the unbound ":"/"?" keys go last.
+	bar := joinGroups(m.labeledGroup("SHIFT +", shiftChips), m.labeledGroup("CTRL +", ctrlChips), plainChips)
 	return withStatus(bar)
+}
+
+// tooltipGroupMinWidth is the narrowest bar width at which the "SHIFT +"/
+// "CTRL +" group labels are worth the screen space they cost (#3). Below
+// it, labeledGroup drops the label text entirely and falls back to a flat,
+// unlabeled chip list — same chips, same mode-dependent order, just no
+// group header eating into room that matters more at this width.
+const tooltipGroupMinWidth = 80
+
+// labeledGroup pairs a group header with its chips, or — below
+// tooltipGroupMinWidth — returns just the chips with no header (#3). Empty
+// chips yield "" so joinGroups can drop the segment entirely.
+func (m Model) labeledGroup(label, chips string) string {
+	if chips == "" {
+		return ""
+	}
+	if m.width < tooltipGroupMinWidth {
+		return chips
+	}
+	return lipgloss.NewStyle().Foreground(activeTheme.TextMuted).Render(label) + " " + chips
+}
+
+// joinGroups lays out already-built group segments with a consistent gap,
+// skipping any that collapsed to "" (labeledGroup with no chips).
+func joinGroups(segments ...string) string {
+	var parts []string
+	for _, s := range segments {
+		if s != "" {
+			parts = append(parts, s)
+		}
+	}
+	return strings.Join(parts, "   ")
 }
 
 // updateProjectDetail forwards a key to the project detail pane and, if it

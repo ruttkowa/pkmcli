@@ -124,6 +124,8 @@ Active whenever no overlay above has captured input.
 | `P` | Palette prefilled `add project ` |
 | `I` | Open the **Import** popover directly (not via the palette) |
 
+**The bottom hotkey bar groups its chips** under `SHIFT +` / `CTRL +` headers, ordered by which one that mode leans on more: view mode (the table above) shows `SHIFT +` first since it's Shift-heavy, Edit mode shows `CTRL +` first for the same reason; the unbound keys (`:`, `?` in view mode; `Tab`, `Esc` in Edit mode) always come last. Below a minimum terminal width the group labels are dropped entirely — every chip content stays the same, just without the header text eating into the room a narrow bar needs for the chips themselves.
+
 Mouse: left-click is supported throughout (sidebar items, note-list rows, `[[links]]` and checkboxes in the viewer); click-dragging over plain body text in the viewer selects and auto-copies text (see [Text Selection](#text-selection)). The scroll wheel scrolls whichever pane (sidebar, note list, viewer, help) is under the cursor, without changing focus.
 
 ### Sidebar

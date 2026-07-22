@@ -597,8 +597,56 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   mouse-support line), `help_view.go` (new `TEXT SELECTION` section)
   updated. `Ctrl+V` does not appear anywhere in either.
 
+### Added (issue batch, 2026-07-22, #3)
+- **Bottom hotkey bar groups chips by prefix, mode-dependently ordered.**
+  The tooltip/chip bar (`Model.renderTooltipBar`) already grouped Shift and
+  Ctrl shortcuts under `SHIFT +`/`CTRL +` labels, but always in the same
+  fixed order regardless of mode, with the unbound `:`/`?` keys shown
+  first. Now the primary group leads: view mode (the default bar, covering
+  List/Note Viewer/Trash/Project Detail — everything but Edit and the
+  modal overlays) leans on Shift shortcuts and shows `SHIFT +` first, then
+  `CTRL +`, then the unbound keys last; Edit mode leans on Ctrl shortcuts
+  and shows `CTRL +` first, then its unbound `Tab`/`Esc` chips last (it has
+  no Shift group of its own). No chip text, action label, or the set of
+  chips shown changed — purely a reordering/regrouping, per the locked
+  "chirurgische Änderung" requirement.
+- **Narrow-width fallback drops the group labels.** Below a new
+  `tooltipGroupMinWidth` (80 columns), `labeledGroup` renders just the
+  chips with no `SHIFT +`/`CTRL +` header text — the label itself was the
+  thing that could eat more space than it was worth at that width, not the
+  grouping logic, so only the label text is what's conditionally dropped;
+  the existing hard-truncation in `fitTooltipBar` still guarantees the bar
+  never wraps to a second line, at any width.
+- `help_view.go`'s static reference already had SHIFT SHORTCUTS/CTRL
+  SHORTCUTS sections; verified every chip shown in the live bar is listed
+  there too, and found one gap — `?` (toggle Help) was never documented
+  anywhere in the reference page itself — added to `NAVIGATION`. Left the
+  static SHIFT-before-CTRL section order unchanged: the reference is one
+  flat page, not mode-aware like the live bar, and that order already
+  matches View mode (the default/primary context for this page).
+
+### Verify
+- `go build ./...`, `go vet ./...`, `go test ./...` — clean; final
+  `go build -o pkm ./cmd/pkm`.
+- `internal/tui/tui_test.go`:
+  `TestHeadlessTooltipBarViewModeGroupsShiftBeforeCtrl`,
+  `TestHeadlessTooltipBarEditModeGroupsCtrlFirst`,
+  `TestHeadlessTooltipBarNarrowWidthDropsGroupLabels` (labels gone below
+  the threshold, chips still there), `TestHeadlessTooltipBarNeverExceedsWidth`
+  (widths 40–220, view and edit mode — the bar's rendered width never
+  exceeds the pane width).
+- Manual (tmux): captured the bar at 150 columns in view mode (`SHIFT +`
+  group, then `CTRL +`, then `:`/`?` last) and in Edit mode (`CTRL +`
+  group, then `Tab`/`Esc` last); captured at 60 columns and confirmed
+  both group labels were absent while the leading chips (`N`, `A`, `D`,
+  ...) still rendered.
+- README (`### Global` section: new paragraph on the bar's grouping and
+  narrow-width fallback) updated.
+
 Remaining backlog tracked as GitHub issues (repo `ruttkowa/pkmcli`):
-hotkey-bar grouping (#3), GitLab Issues integration (#15).
+GitLab Issues integration (#15) — the only issue in this cycle's
+qualified list not attempted; deferred as too large for this batch's
+autonomous session budget, per the note left at the start of this batch.
 
 ## [0.1.0] - 2026-07-08
 

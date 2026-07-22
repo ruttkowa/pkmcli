@@ -8,6 +8,7 @@ import (
 )
 
 const helpContent = `NAVIGATION
+  ?           toggle this Help view
   j / k       scroll the note viewer down / up
   Tab / Shift+Tab  switch focus: Sidebar ↔ Main pane
   Ctrl+W      cycle to next split pane
