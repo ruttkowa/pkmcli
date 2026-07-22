@@ -7,6 +7,8 @@ PATCH = fix-only). See `todo.md` for in-flight work.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-22
+
 ### Added
 - `:import [path]` command + `I` hotkey — a popover (path field with live
   directory-listing autocomplete, Move/Copy toggle default Move, and a
