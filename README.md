@@ -212,14 +212,18 @@ The footer row shows word/line counts plus `Last saved: HH:MM:SS`; while the dra
 
 ### Project Detail
 
-Browsing a project's attached notes and history:
+Shows a project's attached notes, its history, and — below that — a **Tasks** section: a fully interactive, filtered version of the Task Overview scoped to just this project's notes, grouped by note the same way. Toggling a task here uses the same ✅-date-stamping rules as everywhere else, and edits the underlying note directly.
 
 | Key | Action |
 |---|---|
-| `j` / `↓`, `k` / `↑` | Scroll |
+| `j` / `↓`, `k` / `↑` | Move the task cursor (skips note-header rows); falls back to scrolling if the project has no tasks |
+| `Space` | Toggle the checkbox under the cursor |
+| `Enter` | Open the source note of the task under the cursor |
 | `e` / `i` | Start a Hemingway-bridge journal entry |
 
-Composing a bridge entry (captures all input until submitted or cancelled):
+A project with no tasks shows a plain "(no tasks)" line instead of the section.
+
+Composing a bridge entry (captures all input until submitted or cancelled — while this has focus, the task-list keys above are inactive):
 
 | Key | Action |
 |---|---|
@@ -419,6 +423,7 @@ Select a project folder header to open its detail page (see [Project Detail](#pr
 - List of attached notes (clickable)
 - History log — every attach/detach event with timestamp
 - **Hemingway bridge** — press `e` to add a timestamped journal entry
+- **Tasks** — an interactive, project-filtered task list (move, toggle, jump to source note)
 
 ### Moving a note out of a project
 

@@ -55,6 +55,31 @@ func notesWithTasks(n *vault.Note) []taskEntry {
 	return entries
 }
 
+// projectTaskRows flattens a set of notes' tasks into rows grouped by note
+// (H2 header per note, sorted by title, followed by its tasks in file
+// order), skipping notes with no tasks. The shared grouping core used both
+// by the vault-wide Task Overview (per project/unassigned group) and the
+// Project Detail pane's filtered task list (#19).
+func projectTaskRows(notes []*vault.Note) []taskOverviewRow {
+	var withTasks []*vault.Note
+	for _, n := range notes {
+		if len(notesWithTasks(n)) > 0 {
+			withTasks = append(withTasks, n)
+		}
+	}
+	sort.Slice(withTasks, func(i, j int) bool { return withTasks[i].Title < withTasks[j].Title })
+
+	var rows []taskOverviewRow
+	for _, n := range withTasks {
+		rows = append(rows, taskOverviewRow{fileNote: n})
+		for _, te := range notesWithTasks(n) {
+			te := te
+			rows = append(rows, taskOverviewRow{task: &te})
+		}
+	}
+	return rows
+}
+
 // buildTaskOverviewRows scans every note in the vault for tasks and
 // flattens them into the Task Overview's row order: each active project
 // (in sidebar order) with task-bearing notes gets an H1, each such note
@@ -86,27 +111,13 @@ func buildTaskOverviewRows(v *vault.Vault) []taskOverviewRow {
 		if len(notes) == 0 {
 			continue
 		}
-		sort.Slice(notes, func(i, j int) bool { return notes[i].Title < notes[j].Title })
 		rows = append(rows, taskOverviewRow{projectHeader: p.Name})
-		for _, n := range notes {
-			rows = append(rows, taskOverviewRow{fileNote: n})
-			for _, te := range notesWithTasks(n) {
-				te := te
-				rows = append(rows, taskOverviewRow{task: &te})
-			}
-		}
+		rows = append(rows, projectTaskRows(notes)...)
 	}
 
 	if len(unassigned) > 0 {
-		sort.Slice(unassigned, func(i, j int) bool { return unassigned[i].Title < unassigned[j].Title })
 		rows = append(rows, taskOverviewRow{projectHeader: "Unassigned"})
-		for _, n := range unassigned {
-			rows = append(rows, taskOverviewRow{fileNote: n})
-			for _, te := range notesWithTasks(n) {
-				te := te
-				rows = append(rows, taskOverviewRow{task: &te})
-			}
-		}
+		rows = append(rows, projectTaskRows(unassigned)...)
 	}
 
 	return rows

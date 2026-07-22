@@ -213,6 +213,24 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   way cursor/scroll position already was. Issue #20. `internal/tui/viewer.go`
   (`hiddenLinesForFold`, `annotateInteractive`, `processCheckboxesAndCode`),
   `internal/tui/model.go` (`applyFold`, `toggleFoldAt`).
+- Project Detail: the previously-static pane now has a fully interactive
+  **Tasks** section — a per-project filtered view of the Task Overview,
+  grouped by note. `j`/`k` move the cursor (skipping note-header rows,
+  clamped at both ends), `Space` toggles the checkbox under the cursor
+  through the same `toggleCheckboxLine` path the note viewer uses (✅-date
+  stamping included), `Enter` jumps to the task's source note. An empty
+  project shows a plain "(no tasks)" line. The pane's two focus states
+  (task list vs. the pre-existing Hemingway-bridge text input) are the
+  existing `editingBridge` flag reused, entered/left the same way as
+  before (`e`/`i`, `Esc`, or a submitted `Enter`) — a `Tab`-based focus
+  switch was considered but dropped: it collides with the global
+  Sidebar↔Main pane toggle once the bridge isn't already focused, so it
+  couldn't reliably enter bridge focus. Issue #19. `internal/tui/project_views.go`
+  (`projectDetailPane`'s `taskRows`/`taskCursorRow`/`moveTaskCursor`),
+  `internal/tui/task_overview.go` (`projectTaskRows`, factored out of
+  `buildTaskOverviewRows` and shared by both), `internal/tui/model.go`
+  (`toggleCheckboxOnNote`, factored out of `applyCheckboxToggle` and
+  shared with the new `toggleProjectDetailTask`).
 
 ### Verify
 - `go test ./...` — clean.
@@ -318,10 +336,26 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   resetting on the fresh note-open), proving the link resolved to the
   right target despite the shifted rendered position. Clicked the first
   heading again to re-expand it.
+- `internal/tui/tui_test.go` (#19): `TestProjectDetailTaskRowsGroupedByNoteFiltered`,
+  `TestProjectDetailEmptyTasksNoPanic`,
+  `TestProjectDetailCursorSkipsHeadersAndClamps`,
+  `TestHeadlessProjectDetailToggleTaskStampsDate`,
+  `TestHeadlessProjectDetailEnterJumpsToTaskSourceNote`.
+- Manual (tmux): opened a project with two task-bearing notes; cursor
+  started on the first task, `j` moved onto the second task, then across
+  the second note's header directly onto its first task (header row never
+  selected, confirmed via `capture-pane -e`); `Space` toggled a task —
+  rendered `✅` date appeared immediately and the on-disk file showed the
+  same stamped line; typed into the bridge (`e`, then `j`/`j`) — task
+  cursor didn't move, `Esc` returned to the task list unaffected; `Enter`
+  on a task opened its source note in the main pane. A project with no
+  tasks rendered "(no tasks)" with no panic and `j`/`k`/`Space`/`Enter`
+  all safe no-ops.
 
 Remaining backlog tracked as GitHub issues (repo `ruttkowa/pkmcli`):
 soft-delete/trash (#1), text selection + copy/paste (#2), hotkey-bar
-grouping (#3), line-wise editor operations (#10).
+grouping (#3), line-wise editor operations (#10), remembered cursor
+position (#22), GitLab Issues integration (#15).
 
 ## [0.1.0] - 2026-07-08
 

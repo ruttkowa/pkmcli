@@ -2197,6 +2197,236 @@ func TestProjectDetailBridgeEntryDoesNotLeak(t *testing.T) {
 	}
 }
 
+// TestProjectDetailTaskRowsGroupedByNoteFiltered covers #19's core filter:
+// only tasks belonging to the project's own notes appear, grouped by note
+// (H2) in title order, tasks in file order — a note outside the project
+// contributes nothing.
+func TestProjectDetailTaskRowsGroupedByNoteFiltered(t *testing.T) {
+	m := setupTUI(t)
+	p, err := m.vault.Projects.Create("Homelab")
+	if err != nil {
+		t.Fatalf("Projects.Create: %v", err)
+	}
+
+	mkNote := func(title string, project, body string) *vault.Note {
+		n, err := m.vault.Create(title)
+		if err != nil {
+			t.Fatalf("create %q: %v", title, err)
+		}
+		n.State = vault.StateProjects
+		n.Project = project
+		n.Body = body
+		if err := m.vault.Save(n); err != nil {
+			t.Fatalf("save %q: %v", title, err)
+		}
+		return n
+	}
+
+	noteB := mkNote("Zeta Note", "Homelab", "- [ ] task B")
+	noteA := mkNote("Alpha Note", "Homelab", "- [x] task A")
+	mkNote("Other Project Note", "Someplace Else", "- [ ] should not appear")
+
+	rows := projectTaskRows([]*vault.Note{noteB, noteA})
+
+	var got []string
+	for _, r := range rows {
+		switch {
+		case r.fileNote != nil:
+			got = append(got, "H2:"+r.fileNote.Title)
+		case r.task != nil:
+			done := "0"
+			if r.task.done {
+				done = "1"
+			}
+			got = append(got, "T:"+r.task.text+":"+done)
+		}
+	}
+	want := []string{
+		"H2:Alpha Note", "T:task A:1",
+		"H2:Zeta Note", "T:task B:0",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("rows = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("row %d = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+
+	_ = p
+}
+
+// TestProjectDetailEmptyTasksNoPanic covers #19's empty-state constraint: a
+// project with no tasks must render a clear "no tasks" line, not panic or
+// leave a stray header.
+func TestProjectDetailEmptyTasksNoPanic(t *testing.T) {
+	m := setupTUI(t)
+	p, err := m.vault.Projects.Create("Empty Homelab")
+	if err != nil {
+		t.Fatalf("Projects.Create: %v", err)
+	}
+	pd := newProjectDetailPane(p, nil)
+	if len(pd.taskRows) != 0 {
+		t.Fatalf("expected no task rows, got %v", pd.taskRows)
+	}
+	out := pd.render(60, 20)
+	if !strings.Contains(xansi.Strip(out), "no tasks") {
+		t.Errorf("expected empty-state message in render output, got:\n%s", xansi.Strip(out))
+	}
+	_ = m
+}
+
+// TestProjectDetailCursorSkipsHeadersAndClamps covers #19's cursor
+// requirement: movement must skip note-header rows and clamp at both ends,
+// never landing on a non-task row.
+func TestProjectDetailCursorSkipsHeadersAndClamps(t *testing.T) {
+	m := setupTUI(t)
+	p, err := m.vault.Projects.Create("Homelab")
+	if err != nil {
+		t.Fatalf("Projects.Create: %v", err)
+	}
+	mkNote := func(title, body string) *vault.Note {
+		n, err := m.vault.Create(title)
+		if err != nil {
+			t.Fatalf("create %q: %v", title, err)
+		}
+		n.State = vault.StateProjects
+		n.Project = "Homelab"
+		n.Body = body
+		if err := m.vault.Save(n); err != nil {
+			t.Fatalf("save %q: %v", title, err)
+		}
+		return n
+	}
+	mkNote("Alpha Note", "- [ ] only task in alpha")
+	mkNote("Beta Note", "- [ ] first beta task\n- [ ] second beta task")
+
+	allNotes, _ := m.vault.ListAll()
+	pd := newProjectDetailPane(p, allNotes)
+
+	// Cursor must start on a task row, not the first (header) row.
+	if pd.taskRows[pd.taskCursorRow].task == nil {
+		t.Fatalf("initial cursor row %d is not a task row: %v", pd.taskCursorRow, pd.taskRows[pd.taskCursorRow])
+	}
+
+	// Walk downward past the end: must clamp on the last task row, never a
+	// header/spacer row.
+	for i := 0; i < len(pd.taskRows)+2; i++ {
+		pd = pd.moveTaskCursor(1)
+		if pd.taskRows[pd.taskCursorRow].task == nil {
+			t.Fatalf("cursor landed on non-task row %d after %d downward moves: %v", pd.taskCursorRow, i+1, pd.taskRows[pd.taskCursorRow])
+		}
+	}
+	lastIdx := pd.taskCursorRow
+
+	// Walk upward past the start: must clamp on the first task row.
+	for i := 0; i < len(pd.taskRows)+2; i++ {
+		pd = pd.moveTaskCursor(-1)
+		if pd.taskRows[pd.taskCursorRow].task == nil {
+			t.Fatalf("cursor landed on non-task row %d after %d upward moves: %v", pd.taskCursorRow, i+1, pd.taskRows[pd.taskCursorRow])
+		}
+	}
+	firstIdx := pd.taskCursorRow
+	if firstIdx == lastIdx {
+		t.Fatalf("expected distinct first/last task rows, got both = %d", firstIdx)
+	}
+}
+
+// TestHeadlessProjectDetailToggleTaskStampsDate covers #19's toggle
+// requirement: Space on the task cursor rewrites the correct raw line in
+// the correct note via the shared toggleCheckboxLine path (stamping the ✅
+// date, same as the note viewer), and typing in the bridge does not move
+// the task cursor.
+func TestHeadlessProjectDetailToggleTaskStampsDate(t *testing.T) {
+	m := setupTUI(t)
+	p, err := m.vault.Projects.Create("Homelab")
+	if err != nil {
+		t.Fatalf("Projects.Create: %v", err)
+	}
+	n, err := m.vault.Create("Homelab Note")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	n.State = vault.StateProjects
+	n.Project = "Homelab"
+	n.Body = "- [ ] toggle me"
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+
+	m.splits[m.activeSplit].projectDetail = newProjectDetailPane(p, []*vault.Note{n})
+	m.splits[m.activeSplit].activeView = viewProjectDetail
+
+	cursorBefore := m.splits[m.activeSplit].projectDetail.taskCursorRow
+
+	// Typing into the bridge must not move the task cursor.
+	m = step(t, m, key("e"), "e (start bridge entry)")
+	m = step(t, m, key("j"), "j (typed into bridge, must not move task cursor)")
+	m = step(t, m, key("k"), "k (typed into bridge, must not move task cursor)")
+	if got := m.splits[m.activeSplit].projectDetail.taskCursorRow; got != cursorBefore {
+		t.Errorf("task cursor moved while bridge had focus: got %d, want %d", got, cursorBefore)
+	}
+	if got := m.splits[m.activeSplit].projectDetail.bridgeInput; got != "jk" {
+		t.Errorf("bridgeInput = %q, want %q", got, "jk")
+	}
+	m = step(t, m, key("esc"), "esc (leave bridge without submitting)")
+
+	m = step(t, m, key(" "), "space (toggle task under cursor)")
+
+	reloaded, err := m.vault.FindByTitle("Homelab Note")
+	if err != nil {
+		t.Fatalf("FindByTitle: %v", err)
+	}
+	today := timeNow().Format("2006-01-02")
+	want := "- [x] toggle me ✅ " + today
+	if strings.TrimSpace(reloaded.Body) != want {
+		t.Errorf("body after toggle = %q, want %q", strings.TrimSpace(reloaded.Body), want)
+	}
+
+	row := m.splits[m.activeSplit].projectDetail.taskRows[m.splits[m.activeSplit].projectDetail.taskCursorRow]
+	if row.task == nil || !row.task.done {
+		t.Errorf("expected in-pane task row to reflect done=true after toggle, got %v", row.task)
+	}
+}
+
+// TestHeadlessProjectDetailEnterJumpsToTaskSourceNote covers #19's
+// jump-to-note requirement: Enter on the task cursor opens the task's
+// source note, the same mechanism the :tasks overview uses.
+func TestHeadlessProjectDetailEnterJumpsToTaskSourceNote(t *testing.T) {
+	m := setupTUI(t)
+	p, err := m.vault.Projects.Create("Homelab")
+	if err != nil {
+		t.Fatalf("Projects.Create: %v", err)
+	}
+	n, err := m.vault.Create("Jump Target")
+	if err != nil {
+		t.Fatalf("create note: %v", err)
+	}
+	n.State = vault.StateProjects
+	n.Project = "Homelab"
+	n.Body = "- [ ] find me"
+	if err := m.vault.Save(n); err != nil {
+		t.Fatalf("save note: %v", err)
+	}
+	m.index.Upsert(n)
+	m.titleSet[strings.ToLower(n.Title)] = true
+
+	m.splits[m.activeSplit].projectDetail = newProjectDetailPane(p, []*vault.Note{n})
+	m.splits[m.activeSplit].activeView = viewProjectDetail
+
+	m = step(t, m, key("enter"), "enter (jump to task's source note)")
+
+	got := m.splits[m.activeSplit].viewer.note
+	if got == nil || got.Title != "Jump Target" {
+		t.Errorf("expected Enter to open Jump Target, got %v", got)
+	}
+	if m.splits[m.activeSplit].activeView != viewNote {
+		t.Errorf("expected activeView=viewNote after jump, got %v", m.splits[m.activeSplit].activeView)
+	}
+}
+
 // TestHeadlessDeleteThenUndo covers the full :delete safety net: the file
 // must actually disappear from disk, and Ctrl+Z must recreate it with the
 // original body and re-register the title so links to it render as working.

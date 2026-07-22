@@ -160,10 +160,69 @@ type projectDetailPane struct {
 	bridgeInput   string
 	bridgeDone    bool   // a bridge entry was submitted; caller should save & clear
 	bridgeMessage string // the submitted message
+
+	// Task list (#19): a filtered, per-project version of the :tasks
+	// overview. Focus is either the bridge input (editingBridge, entered
+	// with e/i, left with Esc or a submitted Enter — unchanged) or the task
+	// list (the default). Tab was considered as an additional focus switch
+	// but collides with the global sidebar/main pane-focus binding once
+	// editingBridge is false, so it is not used here — see #19's closing
+	// notes. taskCursorRow indexes into taskRows and only ever rests on a
+	// row with task != nil (header/spacer rows are skipped when moving,
+	// same convention as taskOverviewRow).
+	taskRows      []taskOverviewRow
+	taskCursorRow int
+	pendingToggle bool   // caller should toggle the task under the cursor, then clear this
+	pendingOpen   string // caller should open this note title, then clear this
 }
 
 func newProjectDetailPane(p *vault.Project, notes []*vault.Note) projectDetailPane {
-	return projectDetailPane{project: p, notes: notes}
+	rows := projectTaskRows(notes)
+	cursor := 0
+	for i, r := range rows {
+		if r.task != nil {
+			cursor = i
+			break
+		}
+	}
+	return projectDetailPane{project: p, notes: notes, taskRows: rows, taskCursorRow: cursor}
+}
+
+// taskRowIndices returns the indices of rows in pd.taskRows that carry an
+// actual task, in order — the only rows the cursor may rest on.
+func taskRowIndices(rows []taskOverviewRow) []int {
+	var idx []int
+	for i, r := range rows {
+		if r.task != nil {
+			idx = append(idx, i)
+		}
+	}
+	return idx
+}
+
+// moveTaskCursor steps the cursor by delta among task-only rows, clamping
+// at both ends, skipping note-header/spacer rows.
+func (pd projectDetailPane) moveTaskCursor(delta int) projectDetailPane {
+	idx := taskRowIndices(pd.taskRows)
+	if len(idx) == 0 {
+		return pd
+	}
+	pos := 0
+	for i, v := range idx {
+		if v == pd.taskCursorRow {
+			pos = i
+			break
+		}
+	}
+	pos += delta
+	if pos < 0 {
+		pos = 0
+	}
+	if pos >= len(idx) {
+		pos = len(idx) - 1
+	}
+	pd.taskCursorRow = idx[pos]
+	return pd
 }
 
 func (pd projectDetailPane) update(msg tea.KeyMsg) projectDetailPane {
@@ -194,16 +253,33 @@ func (pd projectDetailPane) update(msg tea.KeyMsg) projectDetailPane {
 		return pd
 	}
 
+	hasTasks := len(taskRowIndices(pd.taskRows)) > 0
 	switch msg.String() {
 	case "j", "down":
-		pd.scrollOffset++
+		if hasTasks {
+			pd = pd.moveTaskCursor(1)
+		} else {
+			pd.scrollOffset++
+		}
 	case "k", "up":
-		if pd.scrollOffset > 0 {
+		if hasTasks {
+			pd = pd.moveTaskCursor(-1)
+		} else if pd.scrollOffset > 0 {
 			pd.scrollOffset--
 		}
 	case "e", "i":
 		pd.editingBridge = true
 		pd.bridgeInput = ""
+	case " ":
+		if hasTasks {
+			pd.pendingToggle = true
+		}
+	case "enter":
+		if pd.taskCursorRow >= 0 && pd.taskCursorRow < len(pd.taskRows) {
+			if row := pd.taskRows[pd.taskCursorRow]; row.task != nil {
+				pd.pendingOpen = row.task.note.Title
+			}
+		}
 	}
 	return pd
 }
@@ -215,6 +291,10 @@ func (pd projectDetailPane) render(width, height int) string {
 	dim := lipgloss.NewStyle().Foreground(t.TextDim)
 	noteStyle := lipgloss.NewStyle().Foreground(t.TextMuted)
 	sepStyle := lipgloss.NewStyle().Foreground(t.TextDim)
+	h2Style := lipgloss.NewStyle().Foreground(t.TextSecond)
+	doneStyle := lipgloss.NewStyle().Foreground(t.TextDim)
+	textStyle := lipgloss.NewStyle().Foreground(t.TextPrimary)
+	cursorStyle := lipgloss.NewStyle().Background(t.Accent).Foreground(t.AccentFg)
 
 	sep := func(label string) string {
 		line := "── " + label + " "
@@ -272,6 +352,48 @@ func (pd projectDetailPane) render(width, height int) string {
 	}
 	lines = append(lines, "")
 
+	// Tasks section (#19): a per-project filtered view of :tasks, grouped
+	// by note. taskLineAt records which line in `lines` each row landed on,
+	// so the cursor can be highlighted and auto-scroll can follow it.
+	lines = append(lines, sep("Tasks"))
+	taskLineAt := make([]int, len(pd.taskRows))
+	if len(pd.taskRows) == 0 {
+		lines = append(lines, dim.Render("  (no tasks)"))
+	} else {
+		for i, row := range pd.taskRows {
+			var content string
+			switch {
+			case row.fileNote != nil:
+				content = h2Style.Render("  " + row.fileNote.Title)
+			case row.task != nil:
+				box := "[ ]"
+				style := textStyle
+				if row.task.done {
+					box = "[x]"
+					style = doneStyle
+				}
+				text := row.task.text
+				if row.task.date != "" {
+					text += " ✅ " + row.task.date
+				}
+				if row.task.result != "" {
+					text += " --> " + row.task.result
+				}
+				content = style.Render(fmt.Sprintf("    %s %s", box, truncate(text, max(1, width-8))))
+			}
+			if i == pd.taskCursorRow && !pd.editingBridge {
+				pad := width - lipgloss.Width(content)
+				if pad < 0 {
+					pad = 0
+				}
+				content = cursorStyle.Render(content + strings.Repeat(" ", pad))
+			}
+			taskLineAt[i] = len(lines)
+			lines = append(lines, content)
+		}
+	}
+	lines = append(lines, "")
+
 	// Hemingway bridge input area
 	if pd.editingBridge {
 		inputLine := "  > " + pd.bridgeInput + "█"
@@ -282,10 +404,21 @@ func (pd projectDetailPane) render(width, height int) string {
 		lines = append(lines, dim.Render("  Press e to add a history entry"))
 	}
 
-	// Apply scroll
+	// Apply scroll: auto-follow the task cursor when the task list has
+	// focus, otherwise fall back to the plain scrollOffset (used only when
+	// there are no tasks to select, see update()'s hasTasks branch).
+	scrollOffset := pd.scrollOffset
+	if idx := taskRowIndices(pd.taskRows); len(idx) > 0 && !pd.editingBridge {
+		cursorLine := taskLineAt[pd.taskCursorRow]
+		if cursorLine < scrollOffset {
+			scrollOffset = cursorLine
+		} else if cursorLine >= scrollOffset+height {
+			scrollOffset = cursorLine - height + 1
+		}
+	}
 	visible := lines
-	if pd.scrollOffset > 0 && pd.scrollOffset < len(lines) {
-		visible = lines[pd.scrollOffset:]
+	if scrollOffset > 0 && scrollOffset < len(lines) {
+		visible = lines[scrollOffset:]
 	}
 	if len(visible) > height {
 		visible = visible[:height]

@@ -1124,6 +1124,30 @@ func (m *Model) toggleCheckboxAt(sp *splitPane, bodyLine int) {
 	m.applyCheckboxToggle(sp, rawLine)
 }
 
+// toggleCheckboxOnNote flips the checkbox at rawLine in n's body, saves,
+// indexes, and records an undo entry. Shared by the note viewer's checkbox
+// toggle (applyCheckboxToggle) and the Project Detail pane's task list
+// toggle (toggleProjectDetailTask, #19).
+func (m *Model) toggleCheckboxOnNote(n *vault.Note, rawLine int) bool {
+	newBody, ok := toggleCheckboxLine(n.Body, rawLine)
+	if !ok {
+		return false
+	}
+	oldNote := *n
+	n.Body = newBody
+	if err := m.vault.Save(n); err != nil {
+		m.statusMsg = "save error: " + err.Error()
+		return false
+	}
+	m.undoStack = append(m.undoStack, undoRecord{oldNote: oldNote, newNote: *n})
+	if len(m.undoStack) > 20 {
+		m.undoStack = m.undoStack[1:]
+	}
+	m.redoStack = nil
+	m.index.Upsert(n)
+	return true
+}
+
 // applyCheckboxToggle flips the checkbox on a raw body line, saves, and
 // re-renders — shared by the mouse click above and the keyboard cursor's
 // Enter action. Preserves cursor/scroll position across the refresh.
@@ -1132,22 +1156,9 @@ func (m *Model) applyCheckboxToggle(sp *splitPane, rawLine int) {
 		return
 	}
 	n := sp.viewer.note
-	newBody, ok := toggleCheckboxLine(n.Body, rawLine)
-	if !ok {
+	if !m.toggleCheckboxOnNote(n, rawLine) {
 		return
 	}
-	oldNote := *n
-	n.Body = newBody
-	if err := m.vault.Save(n); err != nil {
-		m.statusMsg = "save error: " + err.Error()
-		return
-	}
-	m.undoStack = append(m.undoStack, undoRecord{oldNote: oldNote, newNote: *n})
-	if len(m.undoStack) > 20 {
-		m.undoStack = m.undoStack[1:]
-	}
-	m.redoStack = nil
-	m.index.Upsert(n)
 
 	row, col, scroll := sp.viewer.cursorRow, sp.viewer.cursorCol, sp.viewer.scrollOff
 	folded := sp.viewer.folded
@@ -1156,6 +1167,24 @@ func (m *Model) applyCheckboxToggle(sp *splitPane, rawLine int) {
 	sp.viewer.folded = folded
 	l := m.computeLayout()
 	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+}
+
+// toggleProjectDetailTask toggles the checkbox for the task under the
+// Project Detail pane's cursor and rebuilds its task rows from the updated
+// note (#19).
+func (m *Model) toggleProjectDetailTask(sp *splitPane) {
+	pd := sp.projectDetail
+	if pd.taskCursorRow < 0 || pd.taskCursorRow >= len(pd.taskRows) {
+		return
+	}
+	row := pd.taskRows[pd.taskCursorRow]
+	if row.task == nil {
+		return
+	}
+	if !m.toggleCheckboxOnNote(row.task.note, row.task.rawLine) {
+		return
+	}
+	sp.projectDetail.taskRows = projectTaskRows(pd.notes)
 }
 
 // handleMouseWheel scrolls whichever pane (sidebar or a main split) is under
@@ -1619,6 +1648,15 @@ func (m *Model) updateProjectDetail(sp *splitPane, msg tea.KeyMsg) {
 		}
 	}
 	sp.projectDetail = pd
+	if sp.projectDetail.pendingToggle {
+		sp.projectDetail.pendingToggle = false
+		m.toggleProjectDetailTask(sp)
+	}
+	if sp.projectDetail.pendingOpen != "" {
+		title := sp.projectDetail.pendingOpen
+		sp.projectDetail.pendingOpen = ""
+		m.openOrCreateNote(title)
+	}
 }
 
 func (m *Model) showSectionLanding(state vault.NoteState, isTemplates bool) {
