@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          out=pkm
+          if [ "$GOOS" = "windows" ]; then out=pkm.exe; fi
+          go build -o "$out" ./cmd/pkm
+
+      - name: Package
+        run: |
+          archive="pkm_${{ github.event.release.tag_name }}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip "${archive}.zip" pkm.exe
+            echo "ASSET=${archive}.zip" >> "$GITHUB_ENV"
+          else
+            tar -czf "${archive}.tar.gz" pkm
+            echo "ASSET=${archive}.tar.gz" >> "$GITHUB_ENV"
+          fi
+
+      - name: Upload release asset
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "$ASSET" --clobber

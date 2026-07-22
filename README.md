@@ -42,6 +42,8 @@ go build -o pkm ./cmd/pkm
 ./pkm [path/to/vault]
 ```
 
+Or download a prebuilt binary from the [releases page](https://github.com/ruttkowa/pkmcli/releases) — each release publishes archives for Linux, macOS, and Windows (amd64/arm64).
+
 On first run the vault directory is created automatically. Omit the path to be prompted. Once it's open, press `?` for in-app help at any time — it mirrors the reference below.
 
 ---
