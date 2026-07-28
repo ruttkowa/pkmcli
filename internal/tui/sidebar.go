@@ -165,6 +165,66 @@ func (s *sidebarModel) clampCursor() {
 	}
 }
 
+// refreshNotesPreservingCursor reloads expanded rows without letting a
+// disappearing row shift the numeric cursor onto an unrelated section. This
+// matters most after deleting the selected note: the next row at the old
+// index may be Archive even though the user is still working in Areas.
+func (s *sidebarModel) refreshNotesPreservingCursor() {
+	oldItems := s.items()
+	var old sidebarItem
+	hadOld := s.cursor >= 0 && s.cursor < len(oldItems)
+	if hadOld {
+		old = oldItems[s.cursor]
+	}
+
+	*s = s.refreshNotes()
+	if !hadOld {
+		s.clampCursor()
+		return
+	}
+
+	newItems := s.items()
+	for i, item := range newItems {
+		if sameSidebarItem(old, item) {
+			s.cursor = i
+			return
+		}
+	}
+
+	// The selected note was removed. Land on its containing project/section
+	// instead of retaining a stale flat-list index.
+	for i, item := range newItems {
+		switch {
+		case old.isProjectNote && item.isProjectEntry && old.project != nil &&
+			item.project != nil && item.project.Name == old.project.Name:
+			s.cursor = i
+			return
+		case old.isTemplates && old.note != nil && item.isSection && item.isTemplates:
+			s.cursor = i
+			return
+		case old.note != nil && !old.isProjectNote && !old.isTemplates &&
+			item.isSection && !item.isTemplates && !item.isTasks && item.state == old.state:
+			s.cursor = i
+			return
+		}
+	}
+	s.clampCursor()
+}
+
+func sameSidebarItem(a, b sidebarItem) bool {
+	switch {
+	case a.note != nil || b.note != nil:
+		return a.note != nil && b.note != nil && a.note.ID == b.note.ID &&
+			a.isProjectNote == b.isProjectNote && a.isTemplates == b.isTemplates
+	case a.isProjectEntry || b.isProjectEntry:
+		return a.isProjectEntry && b.isProjectEntry && a.project != nil &&
+			b.project != nil && a.project.Name == b.project.Name
+	default:
+		return a.isSection == b.isSection && a.isTemplates == b.isTemplates &&
+			a.isTasks == b.isTasks && a.state == b.state
+	}
+}
+
 func (s sidebarModel) update(msg tea.KeyMsg) (sidebarModel, tea.Cmd) {
 	items := s.items()
 

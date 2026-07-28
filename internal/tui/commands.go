@@ -772,6 +772,6 @@ func (m *Model) recordDetach(n *vault.Note) {
 func refreshCounts(m *Model) string {
 	counts, _ := m.index.CountByState()
 	m.sidebar = m.sidebar.withCounts(counts)
-	m.sidebar = m.sidebar.refreshNotes()
+	m.sidebar.refreshNotesPreservingCursor()
 	return ""
 }

@@ -11,6 +11,11 @@ PATCH = fix-only). See `todo.md` for in-flight work.
 - Help content and the breadcrumb are hard-clipped to their single-row
   width budgets, preventing the Help view from growing beyond the terminal
   frame at narrow widths. Issue #26.
+- Deleting a selected note no longer leaves the sidebar cursor on the same
+  numeric row after the tree shrinks (which could highlight Archive);
+  navigation refreshes preserve row identity and fall back to the deleted
+  note's containing section. Note breadcrumbs now include state and project
+  context for consistent orientation. Issue #32.
 
 ## [0.2.0] - 2026-07-22
 

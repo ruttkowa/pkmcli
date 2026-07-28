@@ -891,7 +891,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case vaultChangedMsg:
 		counts, _ := m.index.CountByState()
 		m.sidebar = m.sidebar.withCounts(counts)
-		m.sidebar = m.sidebar.refreshNotes()
+		m.sidebar.refreshNotesPreservingCursor()
 		if msg.note != nil {
 			l := m.computeLayout()
 			for i := range m.splits {
@@ -1618,7 +1618,12 @@ func (m Model) renderBreadcrumb() string {
 	switch sp.activeView {
 	case viewNote:
 		if sp.viewer.note != nil {
-			title += "  ›  " + sp.viewer.note.Title
+			n := sp.viewer.note
+			title += "  ›  " + capitalize(string(n.State))
+			if n.State == vault.StateProjects && n.Project != "" {
+				title += "  ›  " + n.Project
+			}
+			title += "  ›  " + n.Title
 		}
 	case viewProjectDetail:
 		if sp.projectDetail.project != nil {

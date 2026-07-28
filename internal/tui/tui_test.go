@@ -2919,6 +2919,48 @@ func TestHeadlessDeleteThenUndo(t *testing.T) {
 	}
 }
 
+func TestDeletePreservesSidebarSectionAndBreadcrumbContext(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("Area Note")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := m.vault.SetState(n, vault.StateAreas); err != nil {
+		t.Fatalf("SetState: %v", err)
+	}
+	m.index.Upsert(n)
+	m.sidebar.activeState = vault.StateAreas
+	m.sidebar.expanded[vault.StateAreas] = true
+	m.sidebar = m.sidebar.refreshNotes()
+	for i, item := range m.sidebar.items() {
+		if item.note != nil && item.note.ID == n.ID {
+			m.sidebar.cursor = i
+			break
+		}
+	}
+	m.splits[m.activeSplit].openNote(n)
+
+	breadcrumb := xansi.Strip(m.renderBreadcrumb())
+	if !strings.Contains(breadcrumb, "Areas  ›  Area Note") {
+		t.Fatalf("breadcrumb lacks state orientation: %q", breadcrumb)
+	}
+
+	if msg, _ := m.cmdDelete([]string{n.Title}); !strings.Contains(msg, "deleted") {
+		t.Fatalf("cmdDelete = %q", msg)
+	}
+	items := m.sidebar.items()
+	if m.sidebar.cursor < 0 || m.sidebar.cursor >= len(items) {
+		t.Fatalf("sidebar cursor out of range: %d", m.sidebar.cursor)
+	}
+	selected := items[m.sidebar.cursor]
+	if !selected.isSection || selected.state != vault.StateAreas {
+		t.Fatalf("cursor moved away from Areas after delete: %#v", selected)
+	}
+	if m.sidebar.activeState != vault.StateAreas {
+		t.Fatalf("active state = %q, want Areas", m.sidebar.activeState)
+	}
+}
+
 // TestHeadlessDeleteThenUndoLeavesTrashEmpty covers #1's most important
 // trap, called out explicitly in its qualification: undoing a :delete must
 // not just recreate the note (TestHeadlessDeleteThenUndo above) — it must
