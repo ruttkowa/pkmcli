@@ -26,6 +26,9 @@ PATCH = fix-only). See `todo.md` for in-flight work.
 - Directory paths in the Import popover now show a per-Markdown-file
   checklist; users can select any subset for batch Move/Copy import while
   keeping the existing destination picker. Issue #33.
+- The `pkm` binary now has `--install`, `--install-dir`, and standard
+  `--help` flags. Self-install uses an atomic executable copy and offers an
+  idempotent zsh/bash PATH update when needed. Issue #31.
 
 ## [0.2.0] - 2026-07-22
 

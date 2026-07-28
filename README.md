@@ -694,6 +694,20 @@ pkm has its own split-pane system (`:split`, and the Next pane / Pane picker key
 go test ./...
 ```
 
+## Binary flags
+
+```sh
+pkm --install
+pkm --install --install-dir /custom/bin
+pkm --help
+```
+
+`--install` copies the currently running binary to `~/.local/bin/pkm` by
+default. If that directory is not on `PATH`, pkm detects zsh/bash and asks
+before appending an idempotent export line to `~/.zshrc` or `~/.bashrc`.
+The downloaded binary is retained so a failed install never destroys the
+only copy. A positional vault directory continues to work as before.
+
 ---
 
 ## Developer reference (CLI standards)

@@ -2,12 +2,14 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"pkm/internal/index"
+	"pkm/internal/installer"
 	"pkm/internal/tui"
 	"pkm/internal/vault"
 
@@ -15,9 +17,32 @@ import (
 )
 
 func main() {
+	install := flag.Bool("install", false, "install this pkm binary for the current user")
+	installDir := flag.String("install-dir", "", "binary directory used with --install (default ~/.local/bin)")
+	flag.Usage = func() {
+		fmt.Fprintln(flag.CommandLine.Output(), "Usage: pkm [flags] [vault-directory]")
+		flag.PrintDefaults()
+	}
+	flag.Parse()
+	if *install {
+		destination := ""
+		if *installDir != "" {
+			destination = filepath.Join(*installDir, "pkm")
+		}
+		if err := installer.Install(installer.Options{
+			Destination: destination,
+			Shell:       os.Getenv("SHELL"),
+			Path:        os.Getenv("PATH"),
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "pkm: install: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	vaultPath := "."
-	if len(os.Args) > 1 {
-		vaultPath = os.Args[1]
+	if flag.NArg() > 0 {
+		vaultPath = flag.Arg(0)
 	} else {
 		fmt.Fprint(os.Stderr, "Vault path [.]: ")
 		scanner := bufio.NewScanner(os.Stdin)
