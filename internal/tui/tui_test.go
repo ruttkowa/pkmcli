@@ -60,6 +60,21 @@ func setupTUI(t *testing.T) Model {
 	return model.(Model)
 }
 
+func TestHelpViewDoesNotOverflowNarrowFrames(t *testing.T) {
+	for _, width := range []int{30, 40, 50, 60, 80} {
+		t.Run(fmt.Sprintf("width_%d", width), func(t *testing.T) {
+			m := setupTUI(t)
+			m = step(t, m, tea.WindowSizeMsg{Width: width, Height: 40}, "resize")
+			m = step(t, m, key("?"), "open help")
+
+			output := m.View()
+			if got := lipgloss.Height(output); got != 40 {
+				t.Fatalf("rendered frame has %d rows, want 40", got)
+			}
+		})
+	}
+}
+
 func key(s string) tea.KeyMsg {
 	switch s {
 	case "enter":

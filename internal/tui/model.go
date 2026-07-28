@@ -1658,6 +1658,9 @@ func (m Model) renderBreadcrumb() string {
 		pad = 1
 	}
 	content := left + strings.Repeat(" ", pad) + dateStr
+	if lipgloss.Width(content) > m.width {
+		content = xansi.Truncate(content, m.width, "")
+	}
 
 	return lipgloss.NewStyle().
 		Width(m.width).

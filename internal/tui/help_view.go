@@ -5,6 +5,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
+	xansi "github.com/charmbracelet/x/ansi"
 )
 
 const helpContent = `NAVIGATION
@@ -284,6 +285,15 @@ func helpLines(width int) []string {
 			} else {
 				rendered = dim.Render(clamp(line))
 			}
+		}
+		// Styled key/description rows are assembled from multiple fragments,
+		// so clamping the individual description above is not enough to
+		// account for the key and indentation. Lip Gloss wraps an over-wide
+		// row when the pane box is rendered, making the whole application
+		// taller than the terminal. Keep every logical help row to one
+		// physical display row before windowing it.
+		if lipgloss.Width(rendered) > width {
+			rendered = xansi.Truncate(rendered, width, "")
 		}
 		lines = append(lines, rendered)
 	}

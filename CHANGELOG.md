@@ -7,6 +7,11 @@ PATCH = fix-only). See `todo.md` for in-flight work.
 
 ## [Unreleased]
 
+### Fixed
+- Help content and the breadcrumb are hard-clipped to their single-row
+  width budgets, preventing the Help view from growing beyond the terminal
+  frame at narrow widths. Issue #26.
+
 ## [0.2.0] - 2026-07-22
 
 ### Added
