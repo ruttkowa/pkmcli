@@ -149,3 +149,44 @@ func TestCmdInsertVarUnknownName(t *testing.T) {
 		t.Fatalf("unexpected message: %q", msg)
 	}
 }
+
+func TestGitLabConfigDefaultsRoundTripAndIssuesEditor(t *testing.T) {
+	cfg := AppConfig{}
+	fillConfigDefaults(&cfg)
+	if cfg.GitLabURL != "https://gitlab.com" {
+		t.Fatalf("default GitLab URL = %q", cfg.GitLabURL)
+	}
+	cfg.GitLabURL = "https://gitlab.example/"
+	cfg.GitLabProjects = []string{"group/one"}
+	fillConfigDefaults(&cfg)
+	if cfg.GitLabURL != "https://gitlab.example" {
+		t.Fatalf("trailing slash not stripped: %q", cfg.GitLabURL)
+	}
+
+	v, err := vault.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	saveConfig(v, cfg)
+	loaded := loadConfig(v)
+	if loaded.GitLabURL != cfg.GitLabURL || len(loaded.GitLabProjects) != 1 ||
+		loaded.GitLabProjects[0] != "group/one" {
+		t.Fatalf("round trip = %#v", loaded)
+	}
+
+	pane := newConfigPane(loaded)
+	pane.section = secIssues
+	pane = pane.updateIssues(key("a"))
+	for _, r := range "group/two" {
+		pane = pane.updateIssues(key(string(r)))
+	}
+	pane = pane.updateIssues(key("enter"))
+	if len(pane.gitlabProjects) != 2 {
+		t.Fatalf("projects after add = %v", pane.gitlabProjects)
+	}
+	pane.issueCursor = 2
+	pane = pane.updateIssues(key("d"))
+	if len(pane.gitlabProjects) != 1 {
+		t.Fatalf("projects after remove = %v", pane.gitlabProjects)
+	}
+}

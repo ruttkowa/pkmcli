@@ -102,6 +102,27 @@ func newViewer() viewerModel {
 	return viewerModel{pendingCheckboxRaw: -1, pendingFoldRaw: -1}
 }
 
+// renderMarkdownDocument is the shared Glamour setup for note bodies and
+// virtual read-only documents such as GitLab issue details.
+func renderMarkdownDocument(markdown string, width int) string {
+	base := glamourstyles.DarkStyleConfig
+	if activeTheme.Name == "solarized-light" {
+		base = glamourstyles.LightStyleConfig
+	}
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithStyles(headingStyleConfig(base)),
+		glamour.WithWordWrap(max(1, width-4)),
+	)
+	if err != nil {
+		return markdown
+	}
+	rendered, err := renderer.Render(markdown)
+	if err != nil {
+		return markdown
+	}
+	return rendered
+}
+
 func (m viewerModel) withNote(n *vault.Note) viewerModel {
 	m.note = n
 	m.scrollOff = 0

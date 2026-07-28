@@ -682,8 +682,7 @@ func (m *Model) cmdNewTemplate(args []string) (string, tea.Cmd) {
 }
 
 func (m *Model) cmdTasks() (string, tea.Cmd) {
-	m.openTasksOverview()
-	return "", nil
+	return "", m.openTasksOverview()
 }
 
 // cmdTrash opens #1's recovery list (Enter restores, d permanently deletes).

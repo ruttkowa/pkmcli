@@ -84,6 +84,13 @@
 <pre> - [x] Ship the thing &#x2705; 2026-07-10 --&gt; shipped in v2 - [x] Read paper &#x2705; 2026-07-10 --&gt; [[202606241530 Notes]] </pre>
 <p> The completion date is stamped automatically when a task is toggled done, and stripped when toggled back to undone (overwritten by repeated toggles, not accumulated). A result is free text following <code>--&gt;</code>; if it parses as a <code>[[wikilink]]</code> it renders and opens as a link like any other wikilink. This is a deliberate, minimal departure from "no custom task syntax" below — everything else about the task model (indexing, no query language) is unchanged. </p>
 <p> Tasks may be indexed by the system. </p>
+<h2>GitLab Issues (read-only)</h2>
+<p>Configured GitLab projects appear as virtual sections in the Tasks
+overview. Open issues are read-only, never become notes or enter the SQLite
+note index, and are cached in <code>.pkm/issues.json</code>. Authentication
+is read from <code>PKM_GITLAB_TOKEN</code> only. Issues fetch once on first
+Tasks open and refresh manually with <code>r</code>; details fetch comments
+live and degrade to cached issue data when offline.</p>
 <hr>
 <h2>Editor Model</h2>
 <p> The application is not a full text editor. Two editing paths exist: </p>

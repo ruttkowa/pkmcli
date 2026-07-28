@@ -2,11 +2,14 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"pkm/internal/gitlab"
 	"pkm/internal/index"
 	"pkm/internal/vault"
 
@@ -29,6 +32,7 @@ const (
 	viewSectionLanding
 	viewTasksOverview
 	viewTrash
+	viewIssueDetail
 )
 
 type undoRecord struct {
@@ -111,6 +115,11 @@ type Model struct {
 	// m.noteList; if a future "browse as list" path is added, it must clear
 	// this field or its notes will be wrongly treated as search results.
 	searchResults []*vault.Note
+
+	issuesCache   gitlab.Cache
+	issuesFetched bool
+	issuesSyncing bool
+	gitlabToken   string
 }
 
 func (m Model) computeLayout() layout {
@@ -256,6 +265,8 @@ func New(v *vault.Vault, idx *index.Index) Model {
 	m.noteList = newNoteList(v)
 	m.palette = newPalette(nil, nil)
 	m.titleSet = buildTitleSet(v)
+	m.gitlabToken = os.Getenv("PKM_GITLAB_TOKEN")
+	m.issuesCache = gitlab.LoadCache(filepath.Join(v.Root, ".pkm"))
 
 	// Load config first (theme, sidebar width, etc.).
 	cfg := loadConfig(v)
@@ -330,7 +341,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.MouseActionPress:
 			switch msg.Button {
 			case tea.MouseButtonLeft:
-				m.handleMouseClick(msg.X, msg.Y)
+				if cmd := m.handleMouseClick(msg.X, msg.Y); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
 			case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
 				m.handleMouseWheel(msg.X, msg.Button)
 			}
@@ -457,6 +470,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showConfig = false
 				m.cfg.Keymap = sliceToKeymap(m.configView.kbKeys)
 				m.cfg.Variables = m.configView.variablesMap()
+				m.cfg.GitLabURL = m.configView.gitlabURL
+				m.cfg.GitLabProjects = append([]string(nil), m.configView.gitlabProjects...)
 				saveConfig(m.vault, m.cfg)
 				// Treat config-close like a resize: rerender all viewers at
 				// potentially new layout (sidebar width) and theme.
@@ -479,6 +494,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.configView = m.configView.updateKeybindings(msg)
 			case secVariables:
 				m.configView = m.configView.updateVariables(msg)
+			case secIssues:
+				m.configView = m.configView.updateIssues(msg)
 			default:
 				switch msg.String() {
 				case "j", "down":
@@ -701,7 +718,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.activePane = paneMain
 				} else if m.sidebar.selectedTasks {
 					m.sidebar.selectedTasks = false
-					m.openTasksOverview()
+					if cmd := m.openTasksOverview(); cmd != nil {
+						cmds = append(cmds, cmd)
+					}
 				} else {
 					// Section header selected: show landing page; keep focus in sidebar
 					// so the user can navigate notes below and open them with Enter.
@@ -814,12 +833,51 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "G":
 					sp.taskCursorRow = len(sp.taskRows) - 1
 					m.followTaskCursor(sp)
+				case "r":
+					if m.gitlabToken != "" && len(m.cfg.GitLabProjects) > 0 && !m.issuesSyncing {
+						m.issuesSyncing = true
+						m.statusMsg = "syncing issues…"
+						cmds = append(cmds, fetchIssuesCmd(
+							gitlab.NewClient(m.cfg.GitLabURL, m.gitlabToken),
+							m.cfg.GitLabProjects,
+						))
+					}
 				case "enter":
 					if sp.taskCursorRow >= 0 && sp.taskCursorRow < len(sp.taskRows) {
-						if row := sp.taskRows[sp.taskCursorRow]; row.task != nil {
+						row := sp.taskRows[sp.taskCursorRow]
+						if row.task != nil {
 							m.openOrCreateNote(row.task.note.Title)
+						} else if row.issue != nil {
+							issue := *row.issue
+							sp.issueDetail = issueDetailPane{
+								project: row.issueProject,
+								issue:   &issue,
+								loading: issue.UserNotesCount > 0 && m.gitlabToken != "",
+							}
+							sp.activeView = viewIssueDetail
+							if sp.issueDetail.loading {
+								cmds = append(cmds, fetchCommentsCmd(
+									gitlab.NewClient(m.cfg.GitLabURL, m.gitlabToken),
+									row.issueProject, issue.IID,
+								))
+							}
 						}
 					}
+				}
+			case viewIssueDetail:
+				switch msg.String() {
+				case "esc", "backspace":
+					sp.activeView = viewTasksOverview
+				case "j", "down":
+					sp.issueDetail.scrollOff++
+				case "k", "up":
+					sp.issueDetail.scrollOff = max(0, sp.issueDetail.scrollOff-1)
+				case "g":
+					sp.issueDetail.scrollOff = 0
+				case "G":
+					l := m.computeLayout()
+					lines := strings.Split(strings.TrimRight(sp.issueDetail.rendered, "\n"), "\n")
+					sp.issueDetail.scrollOff = max(0, len(lines)-l.contentHeight)
 				}
 			case viewTrash:
 				// Any key other than a repeated "d" on the same row cancels
@@ -930,6 +988,54 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sidebar.refreshNotesPreservingCursor()
 		m.statusMsg = fmt.Sprintf("indexed %d notes", len(msg.notes))
 
+	case issuesFetchedMsg:
+		m.issuesSyncing = false
+		if m.issuesCache.Projects == nil {
+			m.issuesCache.Projects = map[string][]gitlab.Issue{}
+		}
+		for project, issues := range msg.projects {
+			m.issuesCache.Projects[project] = issues
+		}
+		m.issuesCache.FetchedAt = msg.fetchedAt
+		m.issuesCache.Version = 1
+		_ = gitlab.SaveCache(filepath.Join(m.vault.Root, ".pkm"), m.issuesCache)
+		if len(msg.errs) == 0 {
+			m.statusMsg = "issues synced"
+		} else {
+			var first error
+			for _, project := range m.cfg.GitLabProjects {
+				if err := msg.errs[project]; err != nil {
+					first = err
+					break
+				}
+			}
+			m.statusMsg = fmt.Sprintf("issues: %d repo(s) failed: %v", len(msg.errs), first)
+		}
+		for i := range m.splits {
+			if m.splits[i].activeView == viewTasksOverview {
+				m.splits[i].taskRows = append(buildTaskOverviewRows(m.vault),
+					buildIssueRows(m.cfg, m.issuesCache, m.gitlabToken)...)
+				if m.splits[i].taskCursorRow >= len(m.splits[i].taskRows) {
+					m.splits[i].taskCursorRow = max(0, len(m.splits[i].taskRows)-1)
+				}
+			}
+		}
+
+	case issueCommentsMsg:
+		for i := range m.splits {
+			detail := &m.splits[i].issueDetail
+			if m.splits[i].activeView != viewIssueDetail || detail.issue == nil ||
+				detail.project != msg.project || detail.issue.IID != msg.iid {
+				continue
+			}
+			detail.loading = false
+			detail.comments = msg.comments
+			if msg.err != nil {
+				detail.commentsErr = msg.err.Error()
+			}
+			detail.rendered = ""
+		}
+
 	case statusMsg:
 		m.statusMsg = string(msg)
 
@@ -1020,6 +1126,8 @@ func (m *Model) bustViewerCaches() {
 	for i := range m.splits {
 		m.splits[i].viewer.rendered = ""
 		m.splits[i].viewer.renderWidth = 0
+		m.splits[i].issueDetail.rendered = ""
+		m.splits[i].issueDetail.renderWidth = 0
 	}
 }
 
@@ -1035,7 +1143,7 @@ func (m *Model) applyPickerSelection() {
 	}
 }
 
-func (m *Model) handleMouseClick(x, y int) {
+func (m *Model) handleMouseClick(x, y int) tea.Cmd {
 	l := m.computeLayout()
 	m.panePicker = false // any click exits picker mode
 
@@ -1045,7 +1153,7 @@ func (m *Model) handleMouseClick(x, y int) {
 		itemIdx := y - 4
 		items := m.sidebar.items()
 		if itemIdx < 0 || itemIdx >= len(items) {
-			return
+			return nil
 		}
 		m.sidebar.cursor = itemIdx
 		item := items[itemIdx]
@@ -1086,7 +1194,7 @@ func (m *Model) handleMouseClick(x, y int) {
 						}
 					}
 				}
-				return
+				return nil
 			}
 			if item.isTemplates {
 				m.sidebar.templatesActive = true
@@ -1094,7 +1202,7 @@ func (m *Model) handleMouseClick(x, y int) {
 			} else if item.isTasks {
 				m.sidebar.tasksActive = true
 				m.sidebar.templatesActive = false
-				m.openTasksOverview()
+				return m.openTasksOverview()
 			} else {
 				m.sidebar.activeState = item.state
 				m.sidebar.templatesActive = false
@@ -1123,7 +1231,7 @@ func (m *Model) handleMouseClick(x, y int) {
 				m.sidebar.activeProjectName = item.project.Name
 				m.sidebar.projectsActive = true
 				m.sidebar.templatesActive = false
-				return
+				return nil
 			}
 			m.sidebar.activeProjectName = item.project.Name
 			m.sidebar.projectsActive = true
@@ -1147,7 +1255,7 @@ func (m *Model) handleMouseClick(x, y int) {
 				m.activePane = paneMain
 			}
 		}
-		return
+		return nil
 	}
 
 	// Click in main pane area (past sidebar + 1-char gap)
@@ -1185,7 +1293,7 @@ func (m *Model) handleMouseClick(x, y int) {
 			contentRow := y - 2
 			// +1 for the fold separator line drawn below the header.
 			if contentRow <= sp.viewer.headerLineCount {
-				return // click is in the sticky header or fold separator, no links there
+				return nil // click is in the sticky header or fold separator, no links there
 			}
 			bodyLine := (contentRow - sp.viewer.headerLineCount - 1) + sp.viewer.scrollOff
 			if _, ok := sp.viewer.headingRawLineAt(bodyLine); ok {
@@ -1214,6 +1322,7 @@ func (m *Model) handleMouseClick(x, y int) {
 			}
 		}
 	}
+	return nil
 }
 
 // applyFold sets the fold state of the heading at rawLine (#20), forces a
@@ -1609,6 +1718,8 @@ func (m Model) renderSplits(l layout) string {
 			content = renderTaskOverview(sp.taskRows, pi, l.contentHeight, sp.taskScrollOff, sp.taskCursorRow, focused)
 		case viewTrash:
 			content = renderTrash(sp.trashRows, m.cfg.TrashRetentionDays, pi, l.contentHeight, sp.trashScrollOff, sp.trashCursorRow, sp.trashConfirmID, focused)
+		case viewIssueDetail:
+			content = m.splits[i].issueDetail.render(pi, l.contentHeight)
 		}
 
 		borderColor := activeTheme.BorderNormal
@@ -1659,6 +1770,8 @@ func (m Model) renderBreadcrumb() string {
 		title += "  ›  Tasks"
 	case viewTrash:
 		title += "  ›  Trash"
+	case viewIssueDetail:
+		title += "  ›  Tasks  ›  Issue"
 	case viewHelp:
 		title += "  ›  Help"
 	case viewSectionLanding:
@@ -1795,7 +1908,17 @@ func (m Model) renderTooltipBar() string {
 
 	// Task Overview: show cursor movement, open, and close hints.
 	if m.activePane == paneMain && len(m.splits) > 0 && m.splits[m.activeSplit].activeView == viewTasksOverview {
-		bar := strings.Join([]string{chip("j/k", "select"), chip("g/G", "top/bottom"), chip("Enter", "open note"), chip("Esc", "close")}, " ")
+		parts := []string{chip("j/k", "select"), chip("g/G", "top/bottom"), chip("Enter", "open")}
+		if len(m.cfg.GitLabProjects) > 0 {
+			parts = append(parts, chip("r", "sync issues"))
+		}
+		parts = append(parts, chip("Esc", "close"))
+		bar := strings.Join(parts, " ")
+		return fitTooltipBar(bar, m.width)
+	}
+
+	if m.activePane == paneMain && len(m.splits) > 0 && m.splits[m.activeSplit].activeView == viewIssueDetail {
+		bar := strings.Join([]string{chip("j/k", "scroll"), chip("g/G", "top/bottom"), chip("Esc", "back")}, " ")
 		return fitTooltipBar(bar, m.width)
 	}
 
@@ -1934,13 +2057,21 @@ func (m *Model) showSectionLanding(state vault.NoteState, isTemplates bool) {
 // per-view-open — there is no task index yet) and switches the active split
 // to it. Shared by the :tasks command, the sidebar's Tasks row, and its
 // mouse-click equivalent.
-func (m *Model) openTasksOverview() {
+func (m *Model) openTasksOverview() tea.Cmd {
 	sp := &m.splits[m.activeSplit]
-	sp.taskRows = buildTaskOverviewRows(m.vault)
+	sp.taskRows = append(buildTaskOverviewRows(m.vault), buildIssueRows(m.cfg, m.issuesCache, m.gitlabToken)...)
 	sp.taskScrollOff = 0
 	sp.taskCursorRow = 0
 	sp.activeView = viewTasksOverview
 	m.activePane = paneMain
+	if m.gitlabToken != "" && len(m.cfg.GitLabProjects) > 0 &&
+		!m.issuesFetched && !m.issuesSyncing {
+		m.issuesFetched = true
+		m.issuesSyncing = true
+		m.statusMsg = "syncing issues…"
+		return fetchIssuesCmd(gitlab.NewClient(m.cfg.GitLabURL, m.gitlabToken), m.cfg.GitLabProjects)
+	}
+	return nil
 }
 
 // followTaskCursor adjusts sp.taskScrollOff so taskCursorRow stays within

@@ -8,7 +8,9 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
+	"pkm/internal/gitlab"
 	"pkm/internal/index"
 	"pkm/internal/vault"
 
@@ -72,6 +74,81 @@ func TestHelpViewDoesNotOverflowNarrowFrames(t *testing.T) {
 				t.Fatalf("rendered frame has %d rows, want 40", got)
 			}
 		})
+	}
+}
+
+func TestIssueRowsAndDetailRoundTrip(t *testing.T) {
+	m := setupTUI(t)
+	m.cfg.GitLabProjects = []string{"group/repo"}
+	m.gitlabToken = ""
+	issue := gitlab.Issue{IID: 42, Title: "Cached problem", Description: "Details here"}
+	issue.Author.Name = "Alex"
+	issue.UserNotesCount = 1
+	m.issuesCache = gitlab.Cache{
+		Version:  1,
+		Projects: map[string][]gitlab.Issue{"group/repo": {issue}},
+	}
+	m.openTasksOverview()
+	output := xansi.Strip(m.View())
+	if !strings.Contains(output, "set PKM_GITLAB_TOKEN to sync") || !strings.Contains(output, "#42 Cached problem") {
+		t.Fatalf("tasks output missing cached issue section:\n%s", output)
+	}
+	refreshed := gitlab.Issue{IID: 43, Title: "Fresh problem"}
+	model, _ := m.Update(issuesFetchedMsg{
+		projects:  map[string][]gitlab.Issue{"group/repo": {refreshed}},
+		errs:      map[string]error{},
+		fetchedAt: time.Now(),
+	})
+	m = model.(Model)
+	if output := xansi.Strip(m.View()); !strings.Contains(output, "#43 Fresh problem") {
+		t.Fatalf("fetched rows were not rebuilt:\n%s", output)
+	}
+	// Restore the issue with comments for the detail-view portion.
+	m.issuesCache.Projects["group/repo"] = []gitlab.Issue{issue}
+	m.splits[m.activeSplit].taskRows = append(buildTaskOverviewRows(m.vault),
+		buildIssueRows(m.cfg, m.issuesCache, m.gitlabToken)...)
+	for i, row := range m.splits[m.activeSplit].taskRows {
+		if row.issue != nil {
+			m.splits[m.activeSplit].taskCursorRow = i
+			break
+		}
+	}
+	m = step(t, m, key("enter"), "open issue detail")
+	if m.splits[m.activeSplit].activeView != viewIssueDetail {
+		t.Fatal("issue detail did not open")
+	}
+	if detail := xansi.Strip(m.View()); !strings.Contains(detail, "Cached problem") || !strings.Contains(detail, "#42") {
+		t.Fatalf("detail missing issue metadata:\n%s", detail)
+	}
+	comment := gitlab.Comment{Body: "A useful comment"}
+	comment.Author.Name = "Reviewer"
+	model, _ = m.Update(issueCommentsMsg{project: "group/repo", iid: 42, comments: []gitlab.Comment{comment}})
+	m = model.(Model)
+	if detail := xansi.Strip(m.View()); !strings.Contains(detail, "A useful comment") {
+		t.Fatalf("detail missing comment:\n%s", detail)
+	}
+	cursor := m.splits[m.activeSplit].taskCursorRow
+	m = step(t, m, key("esc"), "back to tasks")
+	if m.splits[m.activeSplit].activeView != viewTasksOverview ||
+		m.splits[m.activeSplit].taskCursorRow != cursor {
+		t.Fatal("Esc did not restore task overview cursor")
+	}
+}
+
+func TestBuildIssueRows(t *testing.T) {
+	if rows := buildIssueRows(defaultConfig(), gitlab.Cache{}, "token"); rows != nil {
+		t.Fatalf("empty projects produced rows: %#v", rows)
+	}
+	cfg := defaultConfig()
+	cfg.GitLabProjects = []string{"one/repo", "two/repo"}
+	cache := gitlab.Cache{Projects: map[string][]gitlab.Issue{
+		"one/repo": {{IID: 1, Title: "one"}},
+	}}
+	rows := buildIssueRows(cfg, cache, "")
+	if len(rows) != 5 || rows[0].projectHeader != "" ||
+		!strings.Contains(rows[1].projectHeader, "PKM_GITLAB_TOKEN") ||
+		rows[2].issue == nil || rows[3].projectHeader != "" {
+		t.Fatalf("unexpected issue rows: %#v", rows)
 	}
 }
 

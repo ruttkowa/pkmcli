@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"pkm/internal/gitlab"
 	"pkm/internal/vault"
 
 	"github.com/charmbracelet/lipgloss"
@@ -30,6 +31,8 @@ type taskOverviewRow struct {
 	projectHeader string      // H1: project name
 	fileNote      *vault.Note // H2: note title header
 	task          *taskEntry  // an actual task line
+	issue         *gitlab.Issue
+	issueProject  string
 }
 
 // notesWithTasks scans a note's body for checkbox lines and returns them as
@@ -161,6 +164,12 @@ func renderTaskOverview(rows []taskOverviewRow, width, height, scrollOff, cursor
 				text += " --> " + row.task.result
 			}
 			content = style.Render(fmt.Sprintf("    %s %s", box, truncate(text, max(1, width-8))))
+		case row.issue != nil:
+			text := fmt.Sprintf("    #%d %s", row.issue.IID, row.issue.Title)
+			if len(row.issue.Labels) > 0 {
+				text += "  [" + strings.Join(row.issue.Labels, ", ") + "]"
+			}
+			content = textStyle.Render(truncate(text, max(1, width)))
 		}
 
 		if i == cursorRow {

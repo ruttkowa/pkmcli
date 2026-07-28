@@ -8,5 +8,6 @@ test/
 # Ephemeral vault state
 *.db
 session.yaml
+issues.json
 .pkm/trash/
 trash.json

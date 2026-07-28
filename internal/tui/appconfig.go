@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	"pkm/internal/vault"
 
@@ -26,6 +27,8 @@ type AppConfig struct {
 	TrashRetentionDays int               `yaml:"trash_retention_days"` // #1: days a :delete'd note stays recoverable in :trash
 	Keymap             Keymap            `yaml:"keymap"`
 	Variables          map[string]string `yaml:"variables"` // user-defined {{name}} substitutions for :insert
+	GitLabURL          string            `yaml:"gitlab_url"`
+	GitLabProjects     []string          `yaml:"gitlab_projects"`
 }
 
 // Keymap holds the remappable global keybindings. Values are bubbletea key
@@ -100,6 +103,7 @@ func defaultConfig() AppConfig {
 		TrashRetentionDays: vault.DefaultRetention,
 		Keymap:             defaultKeymap(),
 		Variables:          map[string]string{},
+		GitLabURL:          "https://gitlab.com",
 	}
 }
 
@@ -153,6 +157,10 @@ func fillConfigDefaults(cfg *AppConfig) {
 	if cfg.Variables == nil {
 		cfg.Variables = map[string]string{}
 	}
+	if strings.TrimSpace(cfg.GitLabURL) == "" {
+		cfg.GitLabURL = "https://gitlab.com"
+	}
+	cfg.GitLabURL = strings.TrimRight(strings.TrimSpace(cfg.GitLabURL), "/")
 	cfg.Version = currentConfigVersion
 }
 

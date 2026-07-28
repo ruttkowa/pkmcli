@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"pkm/internal/gitlab"
 	"pkm/internal/vault"
 )
 
@@ -28,6 +29,8 @@ type splitPane struct {
 	taskScrollOff int
 	taskCursorRow int
 
+	issueDetail issueDetailPane
+
 	// trash view (#1, assembled once on entry, same convention as the task
 	// overview above)
 	trashRows      []vault.TrashEntry
@@ -42,6 +45,17 @@ type splitPane struct {
 	// Cleared by any ordinary openNote, so it only applies to the note(s)
 	// reached directly from that particular search.
 	searchReturn []*vault.Note
+}
+
+type issueDetailPane struct {
+	project     string
+	issue       *gitlab.Issue
+	comments    []gitlab.Comment
+	loading     bool
+	commentsErr string
+	scrollOff   int
+	rendered    string
+	renderWidth int
 }
 
 func newSplitPane() splitPane {

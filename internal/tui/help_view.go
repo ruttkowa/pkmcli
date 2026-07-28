@@ -121,7 +121,11 @@ TASK OVERVIEW  —  :tasks or the sidebar's Tasks row
   j/k or ↓/↑    move the row cursor
   g / G         jump to first / last row
   Enter         open the source note of the task under the cursor
+  r             refresh configured GitLab issue sections
   Esc           close, back to the note list
+  GitLab issues are read-only virtual rows configured under :config →
+  Issues. Set PKM_GITLAB_TOKEN (PAT with read_api); Enter opens a cached
+  issue detail and fetches comments live.
 
 TRASH  —  :trash
   :delete moves a note here instead of removing it outright — recoverable
@@ -164,7 +168,7 @@ COMMAND PALETTE  —  press : or Ctrl+Space to open
                             files into Inbox, and atomically rebuild search
   :split [note]             open a new side-by-side pane
   :close                    close the focused pane
-  :config                   open settings (General / Keybindings / Variables)
+  :config                   open settings (General / Keybindings / Variables / Issues)
   :config export [path]     write config to file (default .pkm/config-export.yaml)
   :config import [path]     load config from file
   :quit  /  :exit           quit (session is saved)
@@ -215,7 +219,7 @@ TEMPLATE WORKFLOW
     {{id}} {{title}} {{created}} {{updated}} and any :config-defined
     variable are substituted on insertion.
 
-CONFIGURATION  —  :config  (Tab cycles General / Keybindings / Variables)
+CONFIGURATION  —  :config  (Tab cycles General / Keybindings / Variables / Issues)
   Keybindings section: remaps the global chords (palette, pane picker, next
   pane, quit, undo, redo, save) that terminal multiplexers like tmux/zellij
   may otherwise intercept. Enter captures the next ctrl/alt keypress; d
@@ -223,6 +227,8 @@ CONFIGURATION  —  :config  (Tab cycles General / Keybindings / Variables)
   Variables section: simple key-value pairs used by :insert var <name> and
   by {{name}} substitution in :insert <template>. Enter adds/edits a value,
   d deletes.
+  Issues section: GitLab base URL plus project paths (group/repo). Set the
+  read_api PAT in PKM_GITLAB_TOKEN; it is never written to config or cache.
   :config export / :config import move a whole config.yaml between vaults;
   importing an older or newer file never crashes — unknown fields are
   ignored and missing ones fall back to defaults.

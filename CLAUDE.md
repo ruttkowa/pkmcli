@@ -15,6 +15,11 @@ Full specification: `spec.html`
 - **Keyboard-first, Mouse-capable**
 - No plugin system, no graph view, no query language, no embedded editor in v1
 
+**Approved departure (2026-07-11):** read-only GitLab Issues may be shown
+virtually in Tasks and cached at `.pkm/issues.json`. Authentication comes
+only from `PKM_GITLAB_TOKEN`; issues never become notes or enter the note
+index. Everything else remains local-first.
+
 ## Knowledge Management Model (PARA-inspired)
 
 States: **Inbox → Projects / Areas / Research → Archive**

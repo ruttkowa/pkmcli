@@ -29,6 +29,10 @@ PATCH = fix-only). See `todo.md` for in-flight work.
 - The `pkm` binary now has `--install`, `--install-dir`, and standard
   `--help` flags. Self-install uses an atomic executable copy and offers an
   idempotent zsh/bash PATH update when needed. Issue #31.
+- Read-only GitLab Issues integration: configurable GitLab URL/projects,
+  `PKM_GITLAB_TOKEN` authentication, cached open-issue sections in Tasks,
+  manual `r` refresh, and Glamour-rendered detail/comments view. Issues
+  remain virtual and outside the note index. Issue #15.
 
 ## [0.2.0] - 2026-07-22
 

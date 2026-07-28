@@ -276,7 +276,8 @@ Opened with `:tasks` or the sidebar's **Tasks** row (below `#templates`; shown b
 |---|---|
 | `j` / `↓`, `k` / `↑` | Move the row cursor |
 | `g` / `G` | Jump to the first / last row |
-| `Enter` | Open the source note of the task under the cursor (no-op on a heading row) |
+| `Enter` | Open a task's source note or a GitLab issue's read-only detail |
+| `r` | Refresh configured GitLab issue sections |
 | `Esc` / `Backspace` | Close and return to the note list |
 
 The overview is assembled fresh each time it's opened (there's no persistent task index yet), so it always reflects the vault as it is right now.
@@ -653,6 +654,24 @@ and the file is renamed to the canonical `<ID> <Title>.md` form. Run
 `:reindex` to trigger the same efficient scan manually. Indexing progress is
 shown in the bottom status bar. The SQLite rebuild is atomic, so closing pkm
 mid-scan keeps the previous index; restart or run `:reindex` to retry.
+
+## GitLab Issues (read-only)
+
+Open GitLab issues can appear after vault tasks in the Tasks overview,
+without becoming notes or entering search/backlinks:
+
+1. Create a GitLab PAT with `read_api` scope and export it as
+   `PKM_GITLAB_TOKEN`.
+2. Open `:config` → **Issues**, set the GitLab URL if self-hosted, and add
+   project paths such as `group/repo`.
+3. Open Tasks. The first open fetches once; press `r` to refresh manually
+   and `Enter` on an issue to read its description and live comments.
+
+Only open issues are fetched. Issue lists are cached at
+`.pkm/issues.json`, so cached rows remain visible offline; comments are not
+cached. The token is held in memory only and is never written to config,
+cache, logs, or notes. Vault repositories should ignore
+`.pkm/issues.json` (the bundled `.gitignore` already does).
 
 ---
 

@@ -5,8 +5,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/lipgloss"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 const (
@@ -53,9 +53,10 @@ const (
 	secGeneral configSection = iota
 	secKeybindings
 	secVariables
+	secIssues
 )
 
-var sectionNames = []string{"General", "Keybindings", "Variables"}
+var sectionNames = []string{"General", "Keybindings", "Variables", "Issues"}
 
 // varEditMode tracks whether the Variables section is idle or capturing text
 // for a new/edited entry.
@@ -71,6 +72,14 @@ type variableEntry struct {
 	Name  string
 	Value string
 }
+
+type issueEditMode int
+
+const (
+	issueModeNone issueEditMode = iota
+	issueModeURL
+	issueModeProject
+)
 
 type configPane struct {
 	section configSection
@@ -91,6 +100,14 @@ type configPane struct {
 	varTargetName string // name the pending edit will be saved under
 	varNameInput  textinput.Model
 	varValueInput textinput.Model
+
+	// Issues section
+	issueCursor    int // URL=0, projects=1..n, add row=n+1
+	issueMode      issueEditMode
+	issueTarget    int
+	gitlabURL      string
+	gitlabProjects []string
+	issueInput     textinput.Model
 }
 
 func newConfigPane(cfg AppConfig) configPane {
@@ -152,12 +169,20 @@ func newConfigPane(cfg AppConfig) configPane {
 	valueInput.Placeholder = "value"
 	applyTextInputTheme(&valueInput)
 
+	issueInput := textinput.New()
+	issueInput.Prompt = ""
+	issueInput.Placeholder = "group/repo"
+	applyTextInputTheme(&issueInput)
+
 	return configPane{
-		values:        v,
-		kbKeys:        keymapToSlice(cfg.Keymap),
-		variables:     vars,
-		varNameInput:  nameInput,
-		varValueInput: valueInput,
+		values:         v,
+		kbKeys:         keymapToSlice(cfg.Keymap),
+		variables:      vars,
+		varNameInput:   nameInput,
+		varValueInput:  valueInput,
+		gitlabURL:      cfg.GitLabURL,
+		gitlabProjects: append([]string(nil), cfg.GitLabProjects...),
+		issueInput:     issueInput,
 	}
 }
 
@@ -174,7 +199,7 @@ func (c configPane) prevSection() configPane {
 // busy reports whether the pane is mid-capture or mid-edit, so callers know
 // not to switch sections or treat Esc as "close the overlay".
 func (c configPane) busy() bool {
-	return c.kbCapturing || c.varMode != varModeNone
+	return c.kbCapturing || c.varMode != varModeNone || c.issueMode != issueModeNone
 }
 
 // cancelInPlace undoes an in-progress capture/edit. Returns ok=true if it
@@ -192,7 +217,73 @@ func (c configPane) cancelInPlace() (configPane, bool) {
 		c.varValueInput.SetValue("")
 		return c, true
 	}
+	if c.issueMode != issueModeNone {
+		c.issueMode = issueModeNone
+		c.issueInput.SetValue("")
+		return c, true
+	}
 	return c, false
+}
+
+func (c configPane) updateIssues(msg tea.KeyMsg) configPane {
+	if c.issueMode != issueModeNone {
+		if msg.String() == "enter" {
+			value := strings.TrimSpace(c.issueInput.Value())
+			if value != "" {
+				if c.issueMode == issueModeURL {
+					c.gitlabURL = strings.TrimRight(value, "/")
+				} else if c.issueTarget >= 0 && c.issueTarget < len(c.gitlabProjects) {
+					c.gitlabProjects[c.issueTarget] = value
+				} else {
+					c.gitlabProjects = append(c.gitlabProjects, value)
+					c.issueCursor = len(c.gitlabProjects)
+				}
+			}
+			c.issueMode = issueModeNone
+			c.issueInput.SetValue("")
+		} else {
+			c.issueInput, _ = c.issueInput.Update(msg)
+		}
+		return c
+	}
+	rows := len(c.gitlabProjects) + 2
+	switch msg.String() {
+	case "j", "down":
+		c.issueCursor = (c.issueCursor + 1) % rows
+	case "k", "up":
+		c.issueCursor = (c.issueCursor - 1 + rows) % rows
+	case "a", "n":
+		c.issueTarget = len(c.gitlabProjects)
+		c.issueMode = issueModeProject
+		c.issueInput.SetValue("")
+		c.issueInput.Focus()
+	case "enter":
+		switch {
+		case c.issueCursor == 0:
+			c.issueMode = issueModeURL
+			c.issueInput.SetValue(c.gitlabURL)
+			c.issueInput.Focus()
+		case c.issueCursor <= len(c.gitlabProjects):
+			c.issueTarget = c.issueCursor - 1
+			c.issueMode = issueModeProject
+			c.issueInput.SetValue(c.gitlabProjects[c.issueTarget])
+			c.issueInput.Focus()
+		default:
+			c.issueTarget = len(c.gitlabProjects)
+			c.issueMode = issueModeProject
+			c.issueInput.SetValue("")
+			c.issueInput.Focus()
+		}
+	case "d", "x":
+		if c.issueCursor > 0 && c.issueCursor <= len(c.gitlabProjects) {
+			i := c.issueCursor - 1
+			c.gitlabProjects = append(c.gitlabProjects[:i], c.gitlabProjects[i+1:]...)
+			if c.issueCursor > len(c.gitlabProjects)+1 {
+				c.issueCursor--
+			}
+		}
+	}
+	return c
 }
 
 func (c configPane) moveCursor(dir int) configPane {
@@ -350,6 +441,8 @@ func (c configPane) render(width, height int) string {
 		rows, hint = c.renderKeybindings(t)
 	case secVariables:
 		rows, hint = c.renderVariables(t)
+	case secIssues:
+		rows, hint = c.renderIssues(t)
 	default:
 		rows, hint = c.renderGeneral(t)
 	}
@@ -363,6 +456,50 @@ func (c configPane) render(width, height int) string {
 		Height(height).
 		Padding(1, 2).
 		Render(strings.Join(lines, "\n"))
+}
+
+func (c configPane) renderIssues(t Theme) ([]string, string) {
+	label := lipgloss.NewStyle().Width(cfgLabelWidth)
+	var rows []string
+	urlSelected := c.issueCursor == 0
+	urlLabel := label.Foreground(t.TextMuted).Render("  GitLab URL")
+	urlValue := lipgloss.NewStyle().Foreground(t.TextSecond).Render(c.gitlabURL)
+	if urlSelected {
+		urlLabel = label.Bold(true).Foreground(t.TextPrimary).Render("▶ GitLab URL")
+		if c.issueMode == issueModeURL {
+			urlValue = c.issueInput.View()
+		} else {
+			urlValue = lipgloss.NewStyle().Bold(true).Foreground(t.Accent).Render(c.gitlabURL)
+		}
+	}
+	rows = append(rows, urlLabel+urlValue)
+	for i, project := range c.gitlabProjects {
+		selected := c.issueCursor == i+1
+		prefix := "  "
+		style := lipgloss.NewStyle().Foreground(t.TextSecond)
+		value := style.Render(project)
+		if selected {
+			prefix = "▶ "
+			style = style.Bold(true).Foreground(t.Accent)
+			if c.issueMode == issueModeProject {
+				value = c.issueInput.View()
+			} else {
+				value = style.Render(project)
+			}
+		}
+		rows = append(rows, label.Foreground(t.TextMuted).Render(prefix+"Project")+value)
+	}
+	addSelected := c.issueCursor == len(c.gitlabProjects)+1
+	add := "  + Add project"
+	if addSelected {
+		add = "▶ + Add project"
+	}
+	if addSelected && c.issueMode == issueModeProject {
+		rows = append(rows, label.Render("▶ Project")+c.issueInput.View())
+	} else {
+		rows = append(rows, lipgloss.NewStyle().Foreground(t.Accent).Render(add))
+	}
+	return rows, "[↑↓] select   [Enter] edit   [a/n] add project   [d] delete   [Tab] switch section   [Esc] save & close"
 }
 
 func (c configPane) renderGeneral(t Theme) ([]string, string) {
