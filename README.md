@@ -309,14 +309,15 @@ Opened with `:config`. `Tab` / `Shift+Tab` cycle its three tabs; `Esc` saves eve
 
 ### Import Popover
 
-Opened with `I` or `:import [path]`. Imports an external markdown file into the vault as a new note, renamed to the `<ID> <Title>.md` convention (title taken from the source filename) with fresh `id`/`created`/`updated`/`state` — any existing `tags:` in the source file's frontmatter are preserved.
+Opened with `I` or `:import [path]`. Imports an external markdown file into the vault as a new note, renamed to the `<ID> <Title>.md` convention (title taken from the source filename) with fresh `id`/`created`/`updated`/`state` — any existing `tags:` in the source file's frontmatter are preserved. Point Path at a directory to show a checklist and import any selected subset of its Markdown files.
 
 | Key | Action |
 |---|---|
-| `Tab` / `Shift+Tab` | Move between Path → Mode → Destination → Import |
+| `Tab` / `Shift+Tab` | Move between Path → Files (directory only) → Mode → Destination → Import |
 | (Path field) typing | Live directory-listing suggestions (dirs and `.md` files, filtered as you type) |
 | (Path field) `↑`/`↓` | Select a suggestion |
 | (Path field) `Enter` | Accept the highlighted suggestion |
+| (Files field) `j`/`k`, `Space` | Select a Markdown file and toggle its checkbox |
 | (Mode field) `Space` | Toggle Move ↔ Copy — **default: Move** (source file is removed after import) |
 | (Destination field) `←`/`→` or `Enter` | Cycle the destination state (default: Inbox) |
 | (Import field) `Enter` | Run the import |

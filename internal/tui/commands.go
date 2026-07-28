@@ -399,6 +399,7 @@ func (m *Model) cmdImport(args []string) (string, tea.Cmd) {
 		m.importView.pathInput.SetValue(path)
 		m.importView.pathInput.CursorEnd()
 		m.importView.suggestions = pathSuggestions(path)
+		m.importView = m.importView.refreshBatchFiles()
 	}
 	return "", nil
 }
@@ -414,19 +415,45 @@ func (m *Model) runImport() {
 		return
 	}
 	state := vault.AllStates[m.importView.destIdx]
-	n, err := m.vault.Import(path, state, m.importView.move)
-	if err != nil {
-		m.importView.errMsg = "import error: " + err.Error()
+	paths := []string{path}
+	if len(m.importView.batchFiles) > 0 {
+		paths = nil
+		for _, candidate := range m.importView.batchFiles {
+			if m.importView.batchSel[candidate] {
+				paths = append(paths, candidate)
+			}
+		}
+		if len(paths) == 0 {
+			m.importView.errMsg = "select at least one markdown file"
+			m.importView.confirmed = false
+			return
+		}
+	}
+
+	var imported []*vault.Note
+	for _, source := range paths {
+		n, err := m.vault.Import(source, state, m.importView.move)
+		if err != nil {
+			m.importView.errMsg = "import error: " + err.Error()
+			m.importView.confirmed = false
+			return
+		}
+		imported = append(imported, n)
+		m.index.Upsert(n)
+		m.titleSet[strings.ToLower(n.Title)] = true
+	}
+	if len(imported) == 0 {
+		m.importView.errMsg = "no markdown files found"
 		m.importView.confirmed = false
 		return
 	}
-	m.index.Upsert(n)
-	m.titleSet[strings.ToLower(n.Title)] = true
 	m.showImport = false
-	m.splits[m.activeSplit].openNote(n)
+	last := imported[len(imported)-1]
+	m.splits[m.activeSplit].openNote(last)
 	l := m.computeLayout()
 	m.splits[m.activeSplit].viewer = m.splits[m.activeSplit].viewer.preRender(l.paneWidth, m.titleSet)
-	m.statusMsg = refreshCounts(m)
+	refreshCounts(m)
+	m.statusMsg = fmt.Sprintf("imported %d note(s)", len(imported))
 }
 
 // cmdExport opens the :export popover for the currently open note, prefilled

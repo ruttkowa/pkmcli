@@ -23,6 +23,9 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   normalized into Inbox and indexed; progress/errors appear in the status
   bar, and index rebuilds are transactional so interruption retains the
   previous index. Issue #27.
+- Directory paths in the Import popover now show a per-Markdown-file
+  checklist; users can select any subset for batch Move/Copy import while
+  keeping the existing destination picker. Issue #33.
 
 ## [0.2.0] - 2026-07-22
 

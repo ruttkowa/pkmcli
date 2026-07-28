@@ -18,6 +18,7 @@ type importField int
 
 const (
 	impFldPath importField = iota
+	impFldFiles
 	impFldMove
 	impFldDest
 	impFldConfirm
@@ -37,8 +38,12 @@ type importPane struct {
 	suggestions []string
 	suggestSel  int
 
-	move     bool // true = move (default), false = copy
-	destIdx  int  // index into vault.AllStates
+	batchFiles  []string
+	batchSel    map[string]bool
+	batchCursor int
+
+	move      bool // true = move (default), false = copy
+	destIdx   int  // index into vault.AllStates
 	confirmed bool
 	cancelled bool
 	errMsg    string
@@ -63,6 +68,7 @@ func newImportPane() importPane {
 		pathInput: pi,
 		move:      true,
 		destIdx:   destIdx,
+		batchSel:  map[string]bool{},
 	}
 	p.suggestions = pathSuggestions(p.pathInput.Value())
 	return p
@@ -118,7 +124,47 @@ func pathSuggestions(fragment string) []string {
 
 func (p importPane) cycleField(dir int) importPane {
 	n := int(impFldCount)
-	p.focused = importField((int(p.focused) + dir + n) % n)
+	for {
+		p.focused = importField((int(p.focused) + dir + n) % n)
+		if p.focused != impFldFiles || len(p.batchFiles) > 0 {
+			break
+		}
+	}
+	return p
+}
+
+func (p importPane) refreshBatchFiles() importPane {
+	path := strings.TrimSpace(p.pathInput.Value())
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		p.batchFiles = nil
+		p.batchSel = map[string]bool{}
+		p.batchCursor = 0
+		return p
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		p.batchFiles = nil
+		return p
+	}
+	previous := p.batchSel
+	p.batchSel = make(map[string]bool)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".md") {
+			continue
+		}
+		full := filepath.Join(path, entry.Name())
+		p.batchFiles = append(p.batchFiles, full)
+		selected, existed := previous[full]
+		if !existed {
+			selected = true
+		}
+		p.batchSel[full] = selected
+	}
+	sort.Strings(p.batchFiles)
+	if p.batchCursor >= len(p.batchFiles) {
+		p.batchCursor = max(0, len(p.batchFiles)-1)
+	}
 	return p
 }
 
@@ -150,11 +196,29 @@ func (p importPane) update(msg tea.KeyMsg) importPane {
 				p.pathInput.CursorEnd()
 				p.suggestions = pathSuggestions(p.pathInput.Value())
 				p.suggestSel = 0
+				p = p.refreshBatchFiles()
 			}
 		default:
 			p.pathInput, _ = p.pathInput.Update(msg)
 			p.suggestions = pathSuggestions(p.pathInput.Value())
 			p.suggestSel = 0
+			p = p.refreshBatchFiles()
+		}
+	case impFldFiles:
+		switch msg.String() {
+		case "up", "k":
+			if p.batchCursor > 0 {
+				p.batchCursor--
+			}
+		case "down", "j":
+			if p.batchCursor < len(p.batchFiles)-1 {
+				p.batchCursor++
+			}
+		case " ":
+			if p.batchCursor >= 0 && p.batchCursor < len(p.batchFiles) {
+				path := p.batchFiles[p.batchCursor]
+				p.batchSel[path] = !p.batchSel[path]
+			}
 		}
 	case impFldMove:
 		if msg.String() == " " {
@@ -222,6 +286,30 @@ func (p importPane) render(width, height int) string {
 				indicator = "  ▶ "
 			}
 			lines = append(lines, sty.Render(indicator+s))
+		}
+	}
+
+	if len(p.batchFiles) > 0 {
+		lines = append(lines, "", lbl(impFldFiles, "Files:"))
+		maxVisible := max(1, height-18)
+		start := 0
+		if p.batchCursor >= maxVisible {
+			start = p.batchCursor - maxVisible + 1
+		}
+		end := min(len(p.batchFiles), start+maxVisible)
+		for i := start; i < end; i++ {
+			path := p.batchFiles[i]
+			box := "[ ]"
+			if p.batchSel[path] {
+				box = "[x]"
+			}
+			prefix := "    "
+			style := lipgloss.NewStyle().Foreground(t.TextSecond)
+			if p.focused == impFldFiles && i == p.batchCursor {
+				prefix = "  ▶ "
+				style = style.Bold(true).Foreground(t.Accent)
+			}
+			lines = append(lines, style.Render(prefix+box+" "+filepath.Base(path)))
 		}
 	}
 

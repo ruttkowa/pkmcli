@@ -3790,6 +3790,48 @@ func TestHeadlessImportPopover(t *testing.T) {
 	}
 }
 
+func TestHeadlessBatchImportDirectoryChecklist(t *testing.T) {
+	m := setupTUI(t)
+	srcDir := t.TempDir()
+	for _, name := range []string{"One.md", "Two.md", "ignore.txt"} {
+		if err := os.WriteFile(filepath.Join(srcDir, name), []byte(name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m.cmdImport([]string{srcDir})
+	if len(m.importView.batchFiles) != 2 {
+		t.Fatalf("batch files = %v, want two Markdown files", m.importView.batchFiles)
+	}
+
+	m = step(t, m, key("tab"), "tab to file checklist")
+	if m.importView.focused != impFldFiles {
+		t.Fatalf("focused = %v, want file checklist", m.importView.focused)
+	}
+	// Deselect One.md; Two.md remains selected.
+	m = step(t, m, key(" "), "deselect first file")
+	m = step(t, m, key("tab"), "tab to mode")
+	m = step(t, m, key(" "), "toggle to copy")
+	m = step(t, m, key("tab"), "tab to destination")
+	m = step(t, m, key("tab"), "tab to confirm")
+	m = step(t, m, key("enter"), "run batch import")
+
+	if m.showImport {
+		t.Fatalf("batch popover remained open: %s", m.importView.errMsg)
+	}
+	if _, err := m.vault.FindByTitle("One"); err == nil {
+		t.Fatal("deselected file was imported")
+	}
+	if _, err := m.vault.FindByTitle("Two"); err != nil {
+		t.Fatalf("selected file was not imported: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(srcDir, "Two.md")); err != nil {
+		t.Fatalf("copy mode removed source: %v", err)
+	}
+	if m.statusMsg != "imported 1 note(s)" {
+		t.Fatalf("status = %q", m.statusMsg)
+	}
+}
+
 // TestHeadlessImportPopoverEsc guards that Esc cancels the popover without
 // touching the vault.
 func TestHeadlessImportPopoverEsc(t *testing.T) {

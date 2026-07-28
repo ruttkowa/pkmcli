@@ -96,6 +96,9 @@ IMPORT POPOVER  —  I or :import [path]
                 on Destination: cycle forward
                 on Import: run the import
   Esc           cancel, no changes made
+  If Path is a directory, a checklist of its Markdown files appears.
+  Move to Files with Tab, select with j/k, and toggle each file with Space;
+  only checked files are imported.
 
 EXPORT POPOVER  —  :export [path]
   Writes the open note's raw markdown (frontmatter included) to a path

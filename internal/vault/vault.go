@@ -86,7 +86,14 @@ func (v *Vault) Import(srcPath string, state NoteState, move bool) (*Note, error
 
 	title := strings.TrimSuffix(filepath.Base(srcPath), filepath.Ext(srcPath))
 	now := time.Now().Truncate(time.Second)
-	n.ID = GenerateID()
+	entries, _ := os.ReadDir(v.NotesDir())
+	used := make(map[string]bool)
+	for _, entry := range entries {
+		if id := filenameID(entry.Name()); id != "" {
+			used[id] = true
+		}
+	}
+	n.ID = availableNoteID(used)
 	n.Title = title
 	n.Created = now
 	n.Updated = now
