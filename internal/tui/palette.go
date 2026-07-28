@@ -114,7 +114,7 @@ var allCommands = []cmdDef{
 		slots:   []slotKind{},
 	},
 	{
-		name: "theme", sig: "nord · solarized · dracula · gruvbox · tokyonight", desc: "Switch color theme",
+		name: "theme", sig: "<theme>", desc: "Switch color theme",
 		example: `:theme nord`,
 		slots:   []slotKind{slotTheme},
 	},
@@ -442,10 +442,9 @@ func (p paletteModel) stateSuggestions(fragment string) []ctxSuggestion {
 
 func (p paletteModel) themeSuggestions(fragment string) []ctxSuggestion {
 	fl := strings.ToLower(fragment)
-	descs := []string{"Nord dark theme", "Solarized Dark theme", "Dracula theme", "Gruvbox Dark theme", "Tokyo Night theme"}
 	var all []ctxSuggestion
-	for i, t := range ThemeChoices {
-		all = append(all, ctxSuggestion{cmd: t.Name, desc: descs[i]})
+	for _, t := range ThemeChoices {
+		all = append(all, ctxSuggestion{cmd: t.Name, desc: themeDisplayName(t.Name) + " theme"})
 	}
 	if fl == "" {
 		return all

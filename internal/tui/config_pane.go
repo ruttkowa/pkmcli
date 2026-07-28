@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	xansi "github.com/charmbracelet/x/ansi"
 )
 
 const (
@@ -25,7 +26,7 @@ type configItem struct {
 }
 
 var configItems = []configItem{
-	{label: "Theme", options: []string{"Nord", "Solarized Dark", "Dracula", "Gruvbox", "Tokyo Night"}},
+	{label: "Theme", options: []string{"Nord", "Solarized Dark", "Dracula", "Gruvbox", "Tokyo Night", "Solarized Light", "Catppuccin Mocha", "Everforest"}},
 	{label: "Sidebar width", options: []string{"20%", "25%", "33%"}},
 	{label: "Restore session", options: []string{"on", "off"}},
 	{label: "Line numbers", options: []string{"on", "off"}},
@@ -450,6 +451,15 @@ func (c configPane) render(width, height int) string {
 	lines := []string{heading, tabRow, sep, ""}
 	lines = append(lines, rows...)
 	lines = append(lines, "", hint)
+	innerWidth := max(1, width-4)
+	for i, line := range lines {
+		if lipgloss.Width(line) > innerWidth {
+			lines[i] = xansi.Truncate(line, innerWidth, "")
+		}
+	}
+	if maxLines := max(1, height-2); len(lines) > maxLines {
+		lines = lines[:maxLines]
+	}
 
 	return lipgloss.NewStyle().
 		Width(width).
@@ -518,7 +528,58 @@ func (c configPane) renderGeneral(t Theme) ([]string, string) {
 			rows = append(rows, label+valS)
 		}
 	}
-	return rows, "[↑↓] select   [←→] change   [Tab] switch section   [Esc] save & close"
+	if c.cursor == cfgItemTheme && c.values[cfgItemTheme] < len(ThemeChoices) {
+		rows = append(rows, "")
+		rows = append(rows, renderThemePreview(ThemeChoices[c.values[cfgItemTheme]])...)
+	}
+	return rows, "[↑↓] select   [←→] preview   [Enter] confirm theme   [Tab] switch section   [Esc] save & close"
+}
+
+func renderThemePreview(theme Theme) []string {
+	role := func(name string, color lipgloss.Color) string {
+		swatch := lipgloss.NewStyle().Background(color).Render("  ")
+		return "  " + swatch + " " + lipgloss.NewStyle().Foreground(color).Render(name)
+	}
+	rows := []string{
+		lipgloss.NewStyle().Bold(true).Foreground(theme.Accent).Render("Theme roles · " + themeDisplayName(theme.Name)),
+		role("Accent", theme.Accent),
+		role("Text primary", theme.TextPrimary),
+		role("Text secondary", theme.TextSecond),
+		role("Text muted", theme.TextMuted),
+		role("Text dim", theme.TextDim),
+		role("Border focused", theme.BorderFocus),
+		role("Border normal", theme.BorderNormal),
+		role("Status bar", theme.StatusBg),
+		role("Background", theme.Bg),
+		"",
+		lipgloss.NewStyle().Background(theme.Accent).Foreground(theme.AccentFg).Render("  ▶ Focused row  ") +
+			"  " + lipgloss.NewStyle().Bold(true).Foreground(theme.Accent).Render("# Heading") +
+			"  " + lipgloss.NewStyle().Foreground(theme.TextPrimary).Render("Body"),
+	}
+	return rows
+}
+
+func themeDisplayName(name string) string {
+	switch name {
+	case "solarized":
+		return "Solarized Dark"
+	case "tokyonight":
+		return "Tokyo Night"
+	case "solarized-light":
+		return "Solarized Light"
+	case "catppuccin-mocha":
+		return "Catppuccin Mocha"
+	case "nord":
+		return "Nord"
+	case "dracula":
+		return "Dracula"
+	case "gruvbox":
+		return "Gruvbox"
+	case "everforest":
+		return "Everforest"
+	default:
+		return name
+	}
 }
 
 func (c configPane) renderKeybindings(t Theme) ([]string, string) {

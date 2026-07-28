@@ -162,7 +162,7 @@ func (m viewerModel) preRender(width int, titles map[string]bool) viewerModel {
 		return m // already cached for this width
 	}
 	base := glamourstyles.DarkStyleConfig
-	if activeTheme.Name == "light" {
+	if activeTheme.Name == "solarized-light" {
 		base = glamourstyles.LightStyleConfig
 	}
 	r, err := glamour.NewTermRenderer(
@@ -802,7 +802,20 @@ func headingStyleConfig(base ansi.StyleConfig) ansi.StyleConfig {
 	base.CodeBlock.Chroma = nil
 	base.CodeBlock.Color = base.Code.Color
 	base.CodeBlock.BackgroundColor = base.Code.BackgroundColor
-	accent, sub, dim := "39", "35", "244"
+	accent := string(activeTheme.Accent)
+	sub := string(activeTheme.TextSecond)
+	dim := string(activeTheme.TextDim)
+	code := string(activeTheme.TextPrimary)
+	codeBg := string(activeTheme.DropdownBg)
+
+	base.H1.Color = &accent
+	base.H1.BackgroundColor = nil
+	base.Link.Color = &sub
+	base.LinkText.Color = &sub
+	base.Code.Color = &code
+	base.Code.BackgroundColor = &codeBg
+	base.CodeBlock.Color = &code
+	base.CodeBlock.BackgroundColor = &codeBg
 
 	base.H2.Prefix = ""
 	base.H2.Bold = &yes

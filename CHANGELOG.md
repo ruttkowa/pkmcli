@@ -40,6 +40,10 @@ PATCH = fix-only). See `todo.md` for in-flight work.
 - `:jrnl` opens or creates exactly one note for the local date in the fixed
   Areas → Daily folder. The Daily overview sorts newest-first and groups
   notes by year and month. Issue #29.
+- Themes now use one accent for every focus/location signal and a documented
+  four-step neutral ramp; Markdown headings, links, and code derive from the
+  active theme. Configuration adds a non-persistent live role legend/preview,
+  plus Solarized Light, Catppuccin Mocha, and Everforest. Issue #34.
 
 ## [0.2.0] - 2026-07-22
 

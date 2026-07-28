@@ -302,7 +302,11 @@ Like the Task Overview, the list is read fresh from `.pkm/trash.json` each time 
 
 Opened with `:config`. `Tab` / `Shift+Tab` cycle its three tabs; `Esc` saves everything and closes, from any tab (while capturing a keybind or editing a variable, `Esc` cancels just that instead — see below).
 
-**General** — `↑`/`↓` selects a setting, `←`/`→` cycles its value.
+**General** — `↑`/`↓` selects a setting, `←`/`→` cycles its value. On
+Theme, cycling is a non-persistent live preview: a role legend and sample
+focused row/heading/body update immediately. Press `Enter` to confirm; `Esc`
+leaves the active and saved theme unchanged. Every theme uses one accent for
+focus/location plus a four-step neutral text ramp.
 
 **Keybindings** — `↑`/`↓` selects an action, `Enter` starts capture ("press ctrl/alt + a key…"), `d` resets that action to its default. Only `Ctrl`/`Alt` chords are accepted while capturing, so you can't accidentally shadow a plain letter used elsewhere.
 
@@ -398,7 +402,7 @@ The verb list reorders a little depending on where you opened it from — e.g. o
 | `:trash` | List deleted notes; `Enter` restores, `d` permanently deletes — see [Trash](#trash) | — |
 | `:split [note]` | Open a new side-by-side pane, optionally pre-loaded | — |
 | `:close` | Close the focused pane (blocked if it's the last one) | — |
-| `:theme <name>` | `nord` · `solarized` · `dracula` · `gruvbox` · `tokyonight` | — |
+| `:theme <name>` | `nord` · `solarized` · `dracula` · `gruvbox` · `tokyonight` · `solarized-light` · `catppuccin-mocha` · `everforest` | — |
 | `:config` | Open the settings overlay | — |
 | `:config theme <name>` | Set the theme directly, without opening the overlay | — |
 | `:config export [path]` | Write config to a file (default `.pkm/config-export.yaml`) | — |
@@ -612,7 +616,7 @@ Open the config menu with `:config` (see [Config Overlay](#config-overlay) for t
 
 | Setting | Options | Default |
 |---------|---------|---------|
-| Theme | Nord, Solarized Dark, Dracula, Gruvbox, Tokyo Night | Nord |
+| Theme | Nord, Solarized Dark/Light, Dracula, Gruvbox, Tokyo Night, Catppuccin Mocha, Everforest | Nord |
 | Sidebar width | 20%, 25%, 33% | 25% |
 | Restore session | on, off | on |
 | Line numbers | on, off | on |

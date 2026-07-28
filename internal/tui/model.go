@@ -499,10 +499,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.configView = m.configView.moveCursor(-1)
 				case "left", "h":
 					m.configView = m.configView.changeValue(-1)
-					m.applyConfigItem(m.configView.cursor, m.configView.values[m.configView.cursor])
-				case "right", "l", "enter":
+					if m.configView.cursor != cfgItemTheme {
+						m.applyConfigItem(m.configView.cursor, m.configView.values[m.configView.cursor])
+					}
+				case "right", "l":
 					m.configView = m.configView.changeValue(1)
-					m.applyConfigItem(m.configView.cursor, m.configView.values[m.configView.cursor])
+					if m.configView.cursor != cfgItemTheme {
+						m.applyConfigItem(m.configView.cursor, m.configView.values[m.configView.cursor])
+					}
+				case "enter":
+					if m.configView.cursor == cfgItemTheme {
+						m.applyConfigItem(cfgItemTheme, m.configView.values[cfgItemTheme])
+						saveConfig(m.vault, m.cfg)
+					} else {
+						m.configView = m.configView.changeValue(1)
+						m.applyConfigItem(m.configView.cursor, m.configView.values[m.configView.cursor])
+					}
 				}
 			}
 			return m, nil
@@ -1918,7 +1930,7 @@ func (m Model) renderTooltipBar() string {
 
 	// Config overlay: show config-specific hints.
 	if m.showConfig {
-		bar := strings.Join([]string{chip("↑↓", "select"), chip("←→", "change"), chip("Tab", "section"), chip("Esc", "save & close")}, " ")
+		bar := strings.Join([]string{chip("↑↓", "select"), chip("←→", "preview/change"), chip("Enter", "confirm"), chip("Tab", "section"), chip("Esc", "save & close")}, " ")
 		return fitTooltipBar(bar, m.width)
 	}
 

@@ -3742,6 +3742,52 @@ func TestJournalCreatesOnceAndDailyOverviewGroupsNewestFirst(t *testing.T) {
 	}
 }
 
+func TestThemePreviewDoesNotLeakAndConfirmBustsViewerCache(t *testing.T) {
+	m := setupTUI(t)
+	activeTheme = NordTheme
+	m.cfg.Theme = NordTheme.Name
+	n := m.splits[m.activeSplit].viewer.note
+	if n == nil {
+		n = m.noteList.notes[0]
+		m.splits[m.activeSplit].openNote(n)
+	}
+	n.Body = "# Themed heading"
+	m.splits[m.activeSplit].viewer = m.splits[m.activeSplit].viewer.withNote(n).
+		preRender(m.computeLayout().paneWidth, m.titleSet)
+	before := m.splits[m.activeSplit].viewer.rendered
+
+	m.showConfig = true
+	m.configView = newConfigPane(m.cfg)
+	m = step(t, m, key("right"), "preview next theme")
+	if activeTheme.Name != NordTheme.Name || m.cfg.Theme != NordTheme.Name {
+		t.Fatalf("preview leaked globally: active=%q cfg=%q", activeTheme.Name, m.cfg.Theme)
+	}
+	preview := xansi.Strip(m.configView.render(90, 35))
+	if !strings.Contains(preview, "Theme roles") || !strings.Contains(preview, "Text primary") {
+		t.Fatalf("theme legend missing:\n%s", preview)
+	}
+	m = step(t, m, key("esc"), "cancel preview")
+	if activeTheme.Name != NordTheme.Name || loadConfig(m.vault).Theme != NordTheme.Name {
+		t.Fatal("Esc persisted an unconfirmed theme preview")
+	}
+
+	m.showConfig = true
+	m.configView = newConfigPane(m.cfg)
+	m = step(t, m, key("right"), "preview next theme again")
+	m = step(t, m, key("enter"), "confirm theme")
+	if activeTheme.Name != SolarizedDarkTheme.Name || m.cfg.Theme != SolarizedDarkTheme.Name {
+		t.Fatalf("theme confirmation failed: active=%q cfg=%q", activeTheme.Name, m.cfg.Theme)
+	}
+	viewer := m.splits[m.activeSplit].viewer
+	if viewer.rendered != "" || viewer.renderWidth != 0 {
+		t.Fatal("theme confirmation did not bust viewer cache")
+	}
+	viewer = viewer.preRender(m.computeLayout().paneWidth, m.titleSet)
+	if viewer.rendered == before {
+		t.Fatal("heading render did not change with theme")
+	}
+}
+
 // TestHeadlessEditorProjectAssignmentAtMaxLeavesDraftIntact guards the
 // max-active-projects trap from #25's spec: EnsureProject is validated
 // before anything is mutated, so a max-reached error must leave the editor

@@ -222,6 +222,8 @@ TEMPLATE WORKFLOW
     variable are substituted on insertion.
 
 CONFIGURATION  —  :config  (Tab cycles General / Keybindings / Variables / Issues)
+  Theme preview: ←/→ updates the role legend and sample without changing the
+  active theme. Enter confirms; Esc keeps the previously saved theme.
   Keybindings section: remaps the global chords (palette, pane picker, next
   pane, quit, undo, redo, save) that terminal multiplexers like tmux/zellij
   may otherwise intercept. Enter captures the next ctrl/alt keypress; d
