@@ -81,6 +81,7 @@ type Model struct {
 	activePane  pane
 
 	statusMsg  string
+	indexing   bool
 	panePicker bool
 	pickerIdx  int // 0 = sidebar, 1..n = splits[0..n-1]
 
@@ -311,7 +312,7 @@ func New(v *vault.Vault, idx *index.Index) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.sidebar.init(), tickCmd())
+	return tea.Batch(m.sidebar.init(), tea.Sequence(startReindexCmd, reindexCmd(m.vault, m.index)), tickCmd())
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -905,6 +906,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+
+	case reindexRequestedMsg:
+		if !m.indexing {
+			m.indexing = true
+			m.statusMsg = "indexing…"
+			cmds = append(cmds, reindexCmd(m.vault, m.index))
+		}
+
+	case reindexStartedMsg:
+		m.indexing = true
+		m.statusMsg = "indexing…"
+
+	case reindexFinishedMsg:
+		m.indexing = false
+		if msg.err != nil {
+			m.statusMsg = "indexing failed: " + msg.err.Error() + " (run :reindex to retry)"
+			break
+		}
+		m.titleSet = buildTitleSet(m.vault)
+		counts, _ := m.index.CountByState()
+		m.sidebar = m.sidebar.withCounts(counts)
+		m.sidebar.refreshNotesPreservingCursor()
+		m.statusMsg = fmt.Sprintf("indexed %d notes", len(msg.notes))
 
 	case statusMsg:
 		m.statusMsg = string(msg)

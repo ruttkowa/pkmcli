@@ -147,6 +147,127 @@ func (v *Vault) ListAll() ([]*Note, error) {
 	return notes, nil
 }
 
+// NormalizeNotes scans the flat notes directory and brings manually added
+// Markdown files into the vault format. Valid notes are left byte-for-byte
+// untouched; incomplete files receive fresh metadata, default to Inbox, and
+// are renamed to the canonical "<ID> <Title>.md" form.
+func (v *Vault) NormalizeNotes() ([]*Note, error) {
+	entries, err := os.ReadDir(v.NotesDir())
+	if err != nil {
+		return nil, err
+	}
+	used := make(map[string]bool)
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(strings.ToLower(e.Name()), ".md") {
+			if id := filenameID(e.Name()); id != "" {
+				used[id] = true
+			}
+		}
+	}
+
+	var notes []*Note
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".md") {
+			continue
+		}
+		path := filepath.Join(v.NotesDir(), e.Name())
+		n, err := v.Load(path)
+		if err != nil {
+			return nil, err
+		}
+		incomplete := n.ID == "" || n.Title == "" || n.Created.IsZero() ||
+			n.Updated.IsZero() || !validState(n.State)
+		if n.Title == "" {
+			n.Title = titleFromFilename(e.Name())
+		}
+		if n.ID == "" {
+			n.ID = availableNoteID(used)
+			used[n.ID] = true
+		}
+		if n.Created.IsZero() {
+			n.Created = time.Now().Truncate(time.Second)
+		}
+		if n.Updated.IsZero() {
+			n.Updated = n.Created
+		}
+		if !validState(n.State) {
+			n.State = StateInbox
+			n.Project = ""
+		}
+		if n.Tags == nil {
+			n.Tags = []string{}
+		}
+
+		canonical := filepath.Join(v.NotesDir(), Filename(n.ID, n.Title))
+		needsWrite := e.Name() != filepath.Base(canonical) || incomplete
+		// Load again isn't necessary to detect missing metadata: a canonical
+		// marshalled note always starts with frontmatter, while a manually
+		// dropped plain file does not.
+		raw, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil, readErr
+		}
+		needsWrite = needsWrite || !strings.HasPrefix(strings.TrimPrefix(string(raw), "\xef\xbb\xbf"), fmDelimiter)
+		if needsWrite {
+			oldPath := path
+			n.Path = canonical
+			if err := v.Save(n); err != nil {
+				return nil, err
+			}
+			if oldPath != canonical {
+				if err := os.Remove(oldPath); err != nil {
+					return nil, err
+				}
+			}
+		} else {
+			n.Path = path
+		}
+		notes = append(notes, n)
+	}
+	return notes, nil
+}
+
+func filenameID(name string) string {
+	first, _, ok := strings.Cut(strings.TrimSuffix(name, filepath.Ext(name)), " ")
+	if !ok || len(first) != 12 {
+		return ""
+	}
+	if _, err := time.Parse("200601021504", first); err != nil {
+		return ""
+	}
+	return first
+}
+
+func titleFromFilename(name string) string {
+	title := strings.TrimSuffix(name, filepath.Ext(name))
+	if id := filenameID(name); id != "" {
+		title = strings.TrimSpace(strings.TrimPrefix(title, id))
+	}
+	if title == "" {
+		return "Untitled"
+	}
+	return title
+}
+
+func availableNoteID(used map[string]bool) string {
+	now := time.Now()
+	for offset := 0; ; offset++ {
+		id := now.Add(time.Duration(offset) * time.Minute).Format("200601021504")
+		if !used[id] {
+			return id
+		}
+	}
+}
+
+func validState(state NoteState) bool {
+	for _, candidate := range AllStates {
+		if state == candidate {
+			return true
+		}
+	}
+	return false
+}
+
 // ListByState returns notes matching the given state.
 func (v *Vault) ListByState(state NoteState) ([]*Note, error) {
 	all, err := v.ListAll()

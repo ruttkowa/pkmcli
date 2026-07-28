@@ -29,7 +29,7 @@ const (
 // cmdDef is the authoritative grammar entry for one command.
 type cmdDef struct {
 	name    string
-	sig     string     // display signature, e.g. `<note> → <state>`
+	sig     string // display signature, e.g. `<note> → <state>`
 	desc    string
 	example string
 	slots   []slotKind // ordered; slotArrow entries act as gateways between content slots
@@ -135,6 +135,13 @@ var allCommands = []cmdDef{
 		sig:     "",
 		desc:    "List deleted notes; Enter restores, d permanently deletes",
 		example: `:trash`,
+		slots:   []slotKind{},
+	},
+	{
+		name:    "reindex",
+		sig:     "",
+		desc:    "Rescan notes, normalize manually added Markdown, and rebuild the index",
+		example: `:reindex`,
 		slots:   []slotKind{},
 	},
 	{

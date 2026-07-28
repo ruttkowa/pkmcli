@@ -41,17 +41,6 @@ func main() {
 	}
 	defer idx.Close()
 
-	// Initial index build
-	notes, err := v.ListAll()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "pkm: list notes: %v\n", err)
-		os.Exit(1)
-	}
-	if err := idx.RebuildAll(notes); err != nil {
-		fmt.Fprintf(os.Stderr, "pkm: build index: %v\n", err)
-		os.Exit(1)
-	}
-
 	m := tui.New(v, idx)
 
 	var opts []tea.ProgramOption

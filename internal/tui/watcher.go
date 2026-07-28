@@ -15,6 +15,26 @@ type vaultChangedMsg struct {
 	note *vault.Note
 }
 
+type reindexRequestedMsg struct{}
+type reindexStartedMsg struct{}
+
+type reindexFinishedMsg struct {
+	notes []*vault.Note
+	err   error
+}
+
+func startReindexCmd() tea.Msg { return reindexStartedMsg{} }
+
+func reindexCmd(v *vault.Vault, idx *index.Index) tea.Cmd {
+	return func() tea.Msg {
+		notes, err := v.NormalizeNotes()
+		if err == nil {
+			err = idx.RebuildAll(notes)
+		}
+		return reindexFinishedMsg{notes: notes, err: err}
+	}
+}
+
 // StartWatcher starts a background fsnotify watcher on vault/notes/ and sends
 // vaultChangedMsg to the Bubble Tea program whenever a .md file changes.
 func StartWatcher(v *vault.Vault, idx *index.Index, p *tea.Program) {
@@ -36,7 +56,13 @@ func StartWatcher(v *vault.Vault, idx *index.Index, p *tea.Program) {
 					continue
 				}
 				switch {
-				case event.Has(fsnotify.Write) || event.Has(fsnotify.Create):
+				case event.Has(fsnotify.Create):
+					// A dropped-in file may have no PKM frontmatter or
+					// canonical filename. Let the background reconciler
+					// normalize and atomically rebuild instead of indexing an
+					// empty ID.
+					p.Send(reindexRequestedMsg{})
+				case event.Has(fsnotify.Write):
 					n, err := v.Load(filepath.Clean(event.Name))
 					if err == nil {
 						idx.Upsert(n)

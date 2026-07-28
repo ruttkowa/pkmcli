@@ -75,6 +75,8 @@ func (m *Model) handleCommand(raw string) (string, tea.Cmd) {
 		return m.cmdTasks()
 	case "trash":
 		return m.cmdTrash()
+	case "reindex":
+		return m.cmdReindex()
 	case "help":
 		return m.cmdHelp()
 	case "quit", "exit", "q":
@@ -661,6 +663,14 @@ func (m *Model) cmdTasks() (string, tea.Cmd) {
 func (m *Model) cmdTrash() (string, tea.Cmd) {
 	m.openTrashView()
 	return "", nil
+}
+
+func (m *Model) cmdReindex() (string, tea.Cmd) {
+	if m.indexing {
+		return "indexing already in progress", nil
+	}
+	m.indexing = true
+	return "indexing…", reindexCmd(m.vault, m.index)
 }
 
 func (m *Model) cmdHelp() (string, tea.Cmd) {

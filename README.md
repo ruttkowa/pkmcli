@@ -646,6 +646,13 @@ Paths are relative to the vault root unless absolute. Importing a config written
 
 Changes to files in `vault/notes/` are picked up automatically. Edits made in an external editor appear in the viewer without restarting.
 
+New Markdown files dropped directly into `notes/` are normalized in the
+background: missing PKM frontmatter is added, the note is placed in Inbox,
+and the file is renamed to the canonical `<ID> <Title>.md` form. Run
+`:reindex` to trigger the same efficient scan manually. Indexing progress is
+shown in the bottom status bar. The SQLite rebuild is atomic, so closing pkm
+mid-scan keeps the previous index; restart or run `:reindex` to retry.
+
 ---
 
 ## Running under tmux / zellij

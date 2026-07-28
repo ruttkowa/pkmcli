@@ -17,6 +17,13 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   note's containing section. Note breadcrumbs now include state and project
   context for consistent orientation. Issue #32.
 
+### Added
+- Background vault reconciliation at startup and on externally created
+  Markdown files, plus `:reindex` for manual scans. Unformatted files are
+  normalized into Inbox and indexed; progress/errors appear in the status
+  bar, and index rebuilds are transactional so interruption retains the
+  previous index. Issue #27.
+
 ## [0.2.0] - 2026-07-22
 
 ### Added

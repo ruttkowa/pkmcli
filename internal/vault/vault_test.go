@@ -315,3 +315,62 @@ func TestApplyTemplateNoTemplates(t *testing.T) {
 		t.Errorf("expected empty string with no templates, got %q", body)
 	}
 }
+
+func TestNormalizeNotesImportsPlainMarkdownAndLeavesValidNoteUntouched(t *testing.T) {
+	v := setupVault(t)
+	valid := &Note{
+		ID:      "202607271200",
+		Title:   "Existing",
+		Created: time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC),
+		Updated: time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC),
+		State:   StateResearch,
+		Body:    "keep",
+		Path:    filepath.Join(v.NotesDir(), "202607271200 Existing.md"),
+	}
+	data, err := marshalNote(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(valid.Path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(valid.Path)
+
+	dropped := filepath.Join(v.NotesDir(), "Meeting ideas.md")
+	if err := os.WriteFile(dropped, []byte("# Ideas\n\nDiscuss roadmap."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	notes, err := v.NormalizeNotes()
+	if err != nil {
+		t.Fatalf("NormalizeNotes: %v", err)
+	}
+	if len(notes) != 2 {
+		t.Fatalf("got %d notes, want 2", len(notes))
+	}
+	if _, err := os.Stat(dropped); !os.IsNotExist(err) {
+		t.Fatalf("plain source still exists: %v", err)
+	}
+	after, _ := os.ReadFile(valid.Path)
+	if string(after) != string(before) {
+		t.Fatal("valid note was rewritten")
+	}
+
+	var imported *Note
+	for _, n := range notes {
+		if n.Title == "Meeting ideas" {
+			imported = n
+		}
+	}
+	if imported == nil {
+		t.Fatal("normalized note not returned")
+	}
+	if imported.State != StateInbox || imported.ID == "" {
+		t.Fatalf("normalized metadata = %#v", imported)
+	}
+	if !strings.Contains(imported.Body, "Discuss roadmap.") {
+		t.Fatalf("body not preserved: %q", imported.Body)
+	}
+	if filepath.Base(imported.Path) != Filename(imported.ID, imported.Title) {
+		t.Fatalf("path is not canonical: %q", imported.Path)
+	}
+}

@@ -157,6 +157,8 @@ COMMAND PALETTE  —  press : or Ctrl+Space to open
                             project then file (also in the sidebar)
   :trash                    list deleted notes; Enter restores, d
                             permanently deletes
+  :reindex                  rescan notes, normalize manually added .md
+                            files into Inbox, and atomically rebuild search
   :split [note]             open a new side-by-side pane
   :close                    close the focused pane
   :config                   open settings (General / Keybindings / Variables)
@@ -221,6 +223,14 @@ CONFIGURATION  —  :config  (Tab cycles General / Keybindings / Variables)
   :config export / :config import move a whole config.yaml between vaults;
   importing an older or newer file never crashes — unknown fields are
   ignored and missing ones fall back to defaults.
+
+INDEXING
+  The vault is reconciled in the background at startup and whenever an
+  unformatted Markdown file is added to notes/. Progress appears in the
+  bottom status bar. :reindex runs the same scan manually. A failed or
+  interrupted scan leaves the previous SQLite index intact; restart pkm or
+  run :reindex to retry. Files already normalized remain valid and are not
+  duplicated.
 
 LINKS
   [[Note Title]]              link to another note

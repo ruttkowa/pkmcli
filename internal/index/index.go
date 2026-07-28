@@ -72,7 +72,14 @@ func (idx *Index) Upsert(n *vault.Note) error {
 	}
 	defer tx.Rollback()
 
-	_, err = tx.Exec(`
+	if err := upsertNote(tx, n); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func upsertNote(tx *sql.Tx, n *vault.Note) error {
+	_, err := tx.Exec(`
 		INSERT OR REPLACE INTO notes (id, title, state, project, path, created, updated)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		n.ID, n.Title, string(n.State), n.Project, n.Path,
@@ -108,7 +115,7 @@ func (idx *Index) Upsert(n *vault.Note) error {
 		return err
 	}
 
-	return tx.Commit()
+	return nil
 }
 
 // Delete removes a note from the index by ID.
@@ -207,24 +214,22 @@ func (idx *Index) Backlinks(destTitle string) ([]string, error) {
 
 // RebuildAll drops and rebuilds the full index from the given notes.
 func (idx *Index) RebuildAll(notes []*vault.Note) error {
-	if _, err := idx.db.Exec(`DELETE FROM notes`); err != nil {
+	tx, err := idx.db.Begin()
+	if err != nil {
 		return err
 	}
-	if _, err := idx.db.Exec(`DELETE FROM notes_fts`); err != nil {
-		return err
-	}
-	if _, err := idx.db.Exec(`DELETE FROM tags`); err != nil {
-		return err
-	}
-	if _, err := idx.db.Exec(`DELETE FROM links`); err != nil {
-		return err
-	}
-	for _, n := range notes {
-		if err := idx.Upsert(n); err != nil {
+	defer tx.Rollback()
+	for _, table := range []string{"notes", "notes_fts", "tags", "links"} {
+		if _, err := tx.Exec(`DELETE FROM ` + table); err != nil {
 			return err
 		}
 	}
-	return nil
+	for _, n := range notes {
+		if err := upsertNote(tx, n); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // extractLinks parses [[Title]] and [[Title|Alias]] wikilinks from body.
