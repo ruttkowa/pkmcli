@@ -394,6 +394,7 @@ The verb list reorders a little depending on where you opened it from — e.g. o
 | `:import [path]` | Open the import popover (path pre-filled if given) — see note below | `I` (opens directly, no palette) |
 | `:export [path]` | Open the export popover, prefilled with the open note's filename — see note below | — |
 | `:tasks` | Show every task in the vault, grouped by project then file | — |
+| `:jrnl` | Open or create today's unique Areas → Daily note | — |
 | `:trash` | List deleted notes; `Enter` restores, `d` permanently deletes — see [Trash](#trash) | — |
 | `:split [note]` | Open a new side-by-side pane, optionally pre-loaded | — |
 | `:close` | Close the focused pane (blocked if it's the last one) | — |
@@ -424,6 +425,13 @@ Areas, Research, and Archive support unlimited metadata folders, for example
 `:move Router → areas/Networking`. These are navigation groups, not physical
 directories. Project membership is a separate soft link, so the same note
 can live in `areas/Networking` and appear under Projects → Homelab.
+
+### Daily journal
+
+`:jrnl` opens today's `YYYY-MM-DD` note under Areas → Daily, creating it
+only when it does not already exist. The Daily folder remains collapsible
+like other folders; opening its label shows all daily notes newest-first,
+grouped by year and month.
 
 ---
 

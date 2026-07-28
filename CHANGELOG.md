@@ -37,6 +37,9 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   `:move note → areas/folder` (and equivalent states). Project membership
   is now an independent soft link that no longer moves or removes a note
   from its location. Issue #24.
+- `:jrnl` opens or creates exactly one note for the local date in the fixed
+  Areas → Daily folder. The Daily overview sorts newest-first and groups
+  notes by year and month. Issue #29.
 
 ## [0.2.0] - 2026-07-22
 

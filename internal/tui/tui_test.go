@@ -3696,6 +3696,52 @@ func TestMoveIntoMetadataFolderAndSidebarTree(t *testing.T) {
 	}
 }
 
+func TestJournalCreatesOnceAndDailyOverviewGroupsNewestFirst(t *testing.T) {
+	m := setupTUI(t)
+	today := time.Now().Format("2006-01-02")
+	if msg, _ := m.cmdJournal(); !strings.Contains(msg, "created") {
+		t.Fatalf("first :jrnl = %q", msg)
+	}
+	if msg, _ := m.cmdJournal(); !strings.Contains(msg, "opened") {
+		t.Fatalf("second :jrnl = %q", msg)
+	}
+	all, _ := m.vault.ListAll()
+	count := 0
+	for _, n := range all {
+		if n.State == vault.StateAreas && n.Folder == dailyFolder && n.Title == today {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("today's daily note count = %d, want 1", count)
+	}
+
+	older, err := m.vault.Create("2025-12-31")
+	if err != nil {
+		t.Fatal(err)
+	}
+	older.State, older.Folder = vault.StateAreas, dailyFolder
+	if err := m.vault.Save(older); err != nil {
+		t.Fatal(err)
+	}
+	m.openDailyOverview()
+	rows := m.splits[m.activeSplit].dailyOverview.rows
+	var titles []string
+	for _, row := range rows {
+		if row.note != nil {
+			titles = append(titles, row.note.Title)
+		}
+	}
+	if len(titles) != 2 || titles[0] != today || titles[1] != "2025-12-31" {
+		t.Fatalf("daily order = %v", titles)
+	}
+	output := xansi.Strip(m.View())
+	if !strings.Contains(output, time.Now().Format("2006")) ||
+		!strings.Contains(output, time.Now().Format("January")) {
+		t.Fatalf("daily overview missing year/month groups:\n%s", output)
+	}
+}
+
 // TestHeadlessEditorProjectAssignmentAtMaxLeavesDraftIntact guards the
 // max-active-projects trap from #25's spec: EnsureProject is validated
 // before anything is mutated, so a max-reached error must leave the editor

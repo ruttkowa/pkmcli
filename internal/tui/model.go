@@ -33,6 +33,7 @@ const (
 	viewTasksOverview
 	viewTrash
 	viewIssueDetail
+	viewDailyOverview
 )
 
 type undoRecord struct {
@@ -710,6 +711,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.splits[m.activeSplit].projectDetail = newProjectDetailPane(p, pNotes)
 					m.splits[m.activeSplit].activeView = viewProjectDetail
 					m.activePane = paneMain
+				} else if m.sidebar.selectedFolder != "" {
+					folder := m.sidebar.selectedFolder
+					state := m.sidebar.selectedFolderState
+					m.sidebar.selectedFolder = ""
+					if state == vault.StateAreas && folder == dailyFolder {
+						m.openDailyOverview()
+					} else {
+						m.showSectionLanding(state, false)
+					}
 				} else if m.sidebar.selectedTasks {
 					m.sidebar.selectedTasks = false
 					if cmd := m.openTasksOverview(); cmd != nil {
@@ -872,6 +882,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					l := m.computeLayout()
 					lines := strings.Split(strings.TrimRight(sp.issueDetail.rendered, "\n"), "\n")
 					sp.issueDetail.scrollOff = max(0, len(lines)-l.contentHeight)
+				}
+			case viewDailyOverview:
+				switch msg.String() {
+				case "esc", "backspace":
+					sp.activeView = viewList
+				case "j", "down":
+					sp.dailyOverview.cursor = sp.dailyOverview.nextNote(sp.dailyOverview.cursor+1, 1)
+				case "k", "up":
+					sp.dailyOverview.cursor = sp.dailyOverview.nextNote(sp.dailyOverview.cursor-1, -1)
+				case "g":
+					sp.dailyOverview.cursor = sp.dailyOverview.nextNote(0, 1)
+					sp.dailyOverview.scrollOff = 0
+				case "G":
+					sp.dailyOverview.cursor = sp.dailyOverview.nextNote(len(sp.dailyOverview.rows)-1, -1)
+				case "enter":
+					if sp.dailyOverview.cursor >= 0 && sp.dailyOverview.cursor < len(sp.dailyOverview.rows) {
+						if note := sp.dailyOverview.rows[sp.dailyOverview.cursor].note; note != nil {
+							sp.openNote(note)
+							l := m.computeLayout()
+							sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+						}
+					}
 				}
 			case viewTrash:
 				// Any key other than a repeated "d" on the same row cancels
@@ -1205,7 +1237,13 @@ func (m *Model) handleMouseClick(x, y int) tea.Cmd {
 			}
 		} else if item.isFolderEntry {
 			key := folderKey(item.state, item.folder)
-			m.sidebar.expandedFolders[key] = !m.sidebar.expandedFolders[key]
+			if onGlyph {
+				m.sidebar.expandedFolders[key] = !m.sidebar.expandedFolders[key]
+			} else if item.state == vault.StateAreas && item.folder == dailyFolder {
+				m.openDailyOverview()
+			} else {
+				m.showSectionLanding(item.state, false)
+			}
 			m.sidebar.activeState = item.state
 			m.sidebar.projectsActive = false
 			m.sidebar.templatesActive = false
@@ -1721,6 +1759,8 @@ func (m Model) renderSplits(l layout) string {
 			content = renderTrash(sp.trashRows, m.cfg.TrashRetentionDays, pi, l.contentHeight, sp.trashScrollOff, sp.trashCursorRow, sp.trashConfirmID, focused)
 		case viewIssueDetail:
 			content = m.splits[i].issueDetail.render(pi, l.contentHeight)
+		case viewDailyOverview:
+			content = m.splits[i].dailyOverview.render(pi, l.contentHeight, focused)
 		}
 
 		borderColor := activeTheme.BorderNormal
@@ -1773,6 +1813,8 @@ func (m Model) renderBreadcrumb() string {
 		title += "  ›  Trash"
 	case viewIssueDetail:
 		title += "  ›  Tasks  ›  Issue"
+	case viewDailyOverview:
+		title += "  ›  Areas  ›  Daily"
 	case viewHelp:
 		title += "  ›  Help"
 	case viewSectionLanding:
@@ -1923,6 +1965,11 @@ func (m Model) renderTooltipBar() string {
 		return fitTooltipBar(bar, m.width)
 	}
 
+	if m.activePane == paneMain && len(m.splits) > 0 && m.splits[m.activeSplit].activeView == viewDailyOverview {
+		bar := strings.Join([]string{chip("j/k", "select"), chip("g/G", "top/bottom"), chip("Enter", "open"), chip("Esc", "back")}, " ")
+		return fitTooltipBar(bar, m.width)
+	}
+
 	// Edit mode: show edit-specific hints. Edit mode leans on Ctrl
 	// shortcuts, so its group goes first (#3); Tab/Esc are unbound plain
 	// keys, so they're an unlabeled group at the end.
@@ -2052,6 +2099,14 @@ func (m *Model) showSectionLanding(state vault.NoteState, isTemplates bool) {
 		}
 		m.splits[m.activeSplit].activeView = viewSectionLanding
 	}
+}
+
+func (m *Model) openDailyOverview() {
+	notes, _ := m.vault.ListAll()
+	sp := &m.splits[m.activeSplit]
+	sp.dailyOverview = newDailyOverviewPane(notes)
+	sp.activeView = viewDailyOverview
+	m.activePane = paneMain
 }
 
 // openTasksOverview assembles issue #13's Task Overview (a fresh vault scan,

@@ -167,6 +167,7 @@ COMMAND PALETTE  —  press : or Ctrl+Space to open
                             permanently deletes
   :reindex                  rescan notes, normalize manually added .md
                             files into Inbox, and atomically rebuild search
+  :jrnl                     open or create today's unique Areas/Daily note
   :split [note]             open a new side-by-side pane
   :close                    close the focused pane
   :config                   open settings (General / Keybindings / Variables / Issues)
@@ -253,6 +254,8 @@ KNOWLEDGE MODEL  (PARA-inspired)
   Use :move to promote notes between states.
   Areas, Research, and Archive accept folders: :move note → areas/systems.
   Max 4 active projects at a time.
+  Areas → Daily is a fixed journal folder. :jrnl opens today's note; its
+  folder page groups daily notes newest-first by year and month.
 `
 
 // helpLines renders all help content lines styled and clamped to width.

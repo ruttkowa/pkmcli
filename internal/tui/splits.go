@@ -29,7 +29,8 @@ type splitPane struct {
 	taskScrollOff int
 	taskCursorRow int
 
-	issueDetail issueDetailPane
+	issueDetail   issueDetailPane
+	dailyOverview dailyOverviewPane
 
 	// trash view (#1, assembled once on entry, same convention as the task
 	// overview above)

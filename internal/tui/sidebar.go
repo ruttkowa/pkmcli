@@ -29,17 +29,19 @@ type sidebarItem struct {
 }
 
 type sidebarModel struct {
-	index           *index.Index
-	vault           *vault.Vault
-	activeState     vault.NoteState
-	cursor          int
-	counts          map[vault.NoteState]int
-	expanded        map[vault.NoteState]bool
-	notesByState    map[vault.NoteState][]*vault.Note
-	selected        bool
-	selectedNote    *vault.Note    // non-nil when a note title was chosen
-	selectedProject *vault.Project // non-nil when a project entry was chosen
-	selectedTasks   bool           // true when the Tasks row was chosen
+	index               *index.Index
+	vault               *vault.Vault
+	activeState         vault.NoteState
+	cursor              int
+	counts              map[vault.NoteState]int
+	expanded            map[vault.NoteState]bool
+	notesByState        map[vault.NoteState][]*vault.Note
+	selected            bool
+	selectedNote        *vault.Note    // non-nil when a note title was chosen
+	selectedProject     *vault.Project // non-nil when a project entry was chosen
+	selectedFolder      string
+	selectedFolderState vault.NoteState
+	selectedTasks       bool // true when the Tasks row was chosen
 
 	templatesExpanded bool
 	templatesActive   bool
@@ -427,6 +429,8 @@ func (s sidebarModel) update(msg tea.KeyMsg) (sidebarModel, tea.Cmd) {
 			s.projectsActive = false
 			s.selected = true
 			s.selectedNote = nil
+			s.selectedFolder = item.folder
+			s.selectedFolderState = item.state
 		} else if item.isSection && item.isTemplates {
 			if s.templatesExpanded {
 				s.templatesExpanded = false

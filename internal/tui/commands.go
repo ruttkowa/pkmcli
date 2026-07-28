@@ -77,6 +77,8 @@ func (m *Model) handleCommand(raw string) (string, tea.Cmd) {
 		return m.cmdTrash()
 	case "reindex":
 		return m.cmdReindex()
+	case "jrnl", "journal":
+		return m.cmdJournal()
 	case "help":
 		return m.cmdHelp()
 	case "quit", "exit", "q":
@@ -698,6 +700,50 @@ func (m *Model) cmdReindex() (string, tea.Cmd) {
 	}
 	m.indexing = true
 	return "indexing…", reindexCmd(m.vault, m.index)
+}
+
+func (m *Model) cmdJournal() (string, tea.Cmd) {
+	today := time.Now().Format("2006-01-02")
+	all, err := m.vault.ListAll()
+	if err != nil {
+		return "journal error: " + err.Error(), nil
+	}
+	var note *vault.Note
+	for _, candidate := range all {
+		if candidate.State == vault.StateAreas && candidate.Folder == dailyFolder &&
+			candidate.Title == today {
+			note = candidate
+			break
+		}
+	}
+	created := false
+	if note == nil {
+		note, err = m.vault.Create(today)
+		if err != nil {
+			return "journal error: " + err.Error(), nil
+		}
+		note.State = vault.StateAreas
+		note.Folder = dailyFolder
+		if err := m.vault.Save(note); err != nil {
+			return "journal error: " + err.Error(), nil
+		}
+		m.index.Upsert(note)
+		m.titleSet[strings.ToLower(note.Title)] = true
+		created = true
+	}
+	sp := &m.splits[m.activeSplit]
+	sp.openNote(note)
+	l := m.computeLayout()
+	sp.viewer = sp.viewer.preRender(l.paneWidth, m.titleSet)
+	m.sidebar.activeState = vault.StateAreas
+	m.sidebar.expanded[vault.StateAreas] = true
+	m.sidebar.expandedFolders[folderKey(vault.StateAreas, dailyFolder)] = true
+	m.sidebar.refreshNotesPreservingCursor()
+	refreshCounts(m)
+	if created {
+		return "created today's journal", nil
+	}
+	return "opened today's journal", nil
 }
 
 func (m *Model) cmdHelp() (string, tea.Cmd) {

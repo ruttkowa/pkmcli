@@ -145,6 +145,13 @@ var allCommands = []cmdDef{
 		slots:   []slotKind{},
 	},
 	{
+		name:    "jrnl",
+		sig:     "",
+		desc:    "Open or create today's note in Areas/Daily",
+		example: `:jrnl`,
+		slots:   []slotKind{},
+	},
+	{
 		name:    "help",
 		sig:     "",
 		desc:    "Show help (keybindings, commands, workflows)",
