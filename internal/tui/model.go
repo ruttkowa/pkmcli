@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"pkm/internal/backup"
 	"pkm/internal/gitlab"
 	"pkm/internal/index"
 	"pkm/internal/vault"
@@ -121,6 +123,11 @@ type Model struct {
 	issuesFetched bool
 	issuesSyncing bool
 	gitlabToken   string
+
+	backupRunning     bool
+	backupCancel      context.CancelFunc
+	lastBackup        time.Time
+	lastBackupAttempt time.Time
 }
 
 func (m Model) computeLayout() layout {
@@ -467,6 +474,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cfg.Variables = m.configView.variablesMap()
 				m.cfg.GitLabURL = m.configView.gitlabURL
 				m.cfg.GitLabProjects = append([]string(nil), m.configView.gitlabProjects...)
+				m.cfg.BackupMode = backupModes[m.configView.backupMode]
+				m.cfg.BackupDestination = m.configView.backupDestination
+				m.cfg.BackupInterval = backupIntervals[m.configView.backupInterval]
+				m.cfg.BackupTimeout = backupTimeouts[m.configView.backupTimeout]
 				saveConfig(m.vault, m.cfg)
 				// Treat config-close like a resize: rerender all viewers at
 				// potentially new layout (sidebar width) and theme.
@@ -491,6 +502,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.configView = m.configView.updateVariables(msg)
 			case secIssues:
 				m.configView = m.configView.updateIssues(msg)
+			case secBackup:
+				m.configView = m.configView.updateBackup(msg)
 			default:
 				switch msg.String() {
 				case "j", "down":
@@ -1077,6 +1090,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusMsg:
 		m.statusMsg = string(msg)
 
+	case backupFinishedMsg:
+		m.backupRunning = false
+		m.backupCancel = nil
+		if msg.err != nil {
+			m.statusMsg = "backup failed: " + msg.err.Error()
+		} else {
+			m.lastBackup = msg.completed
+			m.statusMsg = "backup complete: " + msg.destination
+		}
+
 	case notesLoadedMsg:
 		m.noteList = m.noteList.withNotes(msg.notes)
 		m.searchResults = nil
@@ -1088,7 +1111,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		// Clock tick: re-render so the breadcrumb time stays current.
-		return m, tickCmd()
+		cmds = append(cmds, tickCmd())
+		if m.backupDue(time.Time(msg)) {
+			cmds = append(cmds, m.startBackup())
+		}
 
 	default:
 		// Route unrecognised messages (e.g. cursor-blink ticks) to the active edit pane.
@@ -1103,6 +1129,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, tea.Batch(cmds...)
+}
+
+func (m *Model) backupDue(now time.Time) bool {
+	if m.backupRunning || m.cfg.BackupMode == "off" || m.cfg.BackupInterval <= 0 ||
+		strings.TrimSpace(m.cfg.BackupDestination) == "" {
+		return false
+	}
+	return m.lastBackupAttempt.IsZero() ||
+		now.Sub(m.lastBackupAttempt) >= time.Duration(m.cfg.BackupInterval)*time.Minute
+}
+
+func (m *Model) startBackup() tea.Cmd {
+	ctx, cancel := context.WithCancel(context.Background())
+	m.backupRunning = true
+	m.backupCancel = cancel
+	m.lastBackupAttempt = timeNow()
+	m.statusMsg = "backup running in background (:backup cancel to stop)"
+	cfg := backup.Config{
+		Mode:        m.cfg.BackupMode,
+		Destination: m.cfg.BackupDestination,
+		Timeout:     time.Duration(m.cfg.BackupTimeout) * time.Second,
+	}
+	root := m.vault.Root
+	return func() tea.Msg {
+		err := backup.Run(ctx, root, cfg)
+		return backupFinishedMsg{err: err, destination: cfg.Destination, completed: timeNow()}
+	}
 }
 
 func (m *Model) applyConfigItem(itemIdx, valueIdx int) {
@@ -2355,6 +2408,11 @@ func capitalize(s string) string {
 }
 
 type statusMsg string
+type backupFinishedMsg struct {
+	err         error
+	destination string
+	completed   time.Time
+}
 type notesLoadedMsg struct{ notes []*vault.Note }
 
 // sortedNotes returns all vault notes sorted by Updated descending, for palette completion.

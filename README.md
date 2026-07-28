@@ -5,7 +5,7 @@ A terminal-based Personal Knowledge Management tool — navigate, organize, and 
 - **Local-first** — plain `.md` files, no lock-in
 - **Keyboard-first** — everything reachable without a mouse
 - **Not an editor** — writing delegates to your preferred external editor (nvim, vim, helix, …)... except for the built-in inline editor (`e`), which handles day-to-day edits without leaving the app
-- **No AI, no sync, no cloud**
+- **No AI, no mandatory cloud** — optional backups remain standard Git
 
 ## Contents
 
@@ -300,7 +300,7 @@ Like the Task Overview, the list is read fresh from `.pkm/trash.json` each time 
 
 ### Config Overlay
 
-Opened with `:config`. `Tab` / `Shift+Tab` cycle its three tabs; `Esc` saves everything and closes, from any tab (while capturing a keybind or editing a variable, `Esc` cancels just that instead — see below).
+Opened with `:config`. `Tab` / `Shift+Tab` cycle its five tabs; `Esc` saves everything and closes, from any tab (while editing a field, `Esc` cancels just that instead — see below).
 
 **General** — `↑`/`↓` selects a setting, `←`/`→` cycles its value. On
 Theme, cycling is a non-persistent live preview: a role legend and sample
@@ -311,6 +311,10 @@ focus/location plus a four-step neutral text ramp.
 **Keybindings** — `↑`/`↓` selects an action, `Enter` starts capture ("press ctrl/alt + a key…"), `d` resets that action to its default. Only `Ctrl`/`Alt` chords are accepted while capturing, so you can't accidentally shadow a plain letter used elsewhere.
 
 **Variables** — `↑`/`↓` selects a variable (or the **+ Add variable** row), `Enter` adds a new one or edits an existing value, `d` deletes.
+
+**Issues** configures read-only GitLab issue sources. **Backup** selects an
+off/remote/path destination, manual or periodic interval, and operation
+timeout. Remote credentials come from Git; path backups are atomic bundles.
 
 ### Import Popover
 
@@ -399,6 +403,7 @@ The verb list reorders a little depending on where you opened it from — e.g. o
 | `:export [path]` | Open the export popover, prefilled with the open note's filename — see note below | — |
 | `:tasks` | Show every task in the vault, grouped by project then file | — |
 | `:jrnl` | Open or create today's unique Areas → Daily note | — |
+| `:backup [cancel]` | Run the configured backup in the background, or cancel it | — |
 | `:trash` | List deleted notes; `Enter` restores, `d` permanently deletes — see [Trash](#trash) | — |
 | `:split [note]` | Open a new side-by-side pane, optionally pre-loaded | — |
 | `:close` | Close the focused pane (blocked if it's the last one) | — |
@@ -610,7 +615,7 @@ No content-based folder hierarchy — organization is through metadata, tags, an
 
 ## Configuration
 
-Open the config menu with `:config` (see [Config Overlay](#config-overlay) for the exact keys). It has three tabs — cycle with `Tab` / `Shift+Tab` — and `Esc` saves and closes from any of them.
+Open the config menu with `:config` (see [Config Overlay](#config-overlay) for the exact keys). It has five tabs — cycle with `Tab` / `Shift+Tab` — and `Esc` saves and closes from any of them.
 
 ### General
 
@@ -649,6 +654,22 @@ Mode-internal keys (arrows, `hjkl`, etc.) aren't remappable — only these seven
 ### Variables
 
 Simple key-value pairs used by `:insert var <name>` and by `{{name}}` substitution in `:insert <template>`.
+
+### Backup
+
+Backups are disabled by default. Choose `remote` to push the current vault
+repository to any Git remote (GitHub, GitLab, Forgejo, or a self-hosted
+server), or `path` to atomically replace a portable `<vault>.bundle` in a
+directory such as a mounted USB drive. Set an interval for automatic
+background runs, or leave it on `manual` and run `:backup`.
+
+Remote backups use normal Git SSH agents and HTTPS credential helpers. pkm
+has no token field and will not open a hidden username/password prompt
+behind the TUI; configure credentials with Git first. Each run snapshots
+pending vault changes, has a configurable timeout, and reports completion or
+failure in the status bar. `:backup cancel` stops a running operation. A
+failed, canceled, timed-out, or unavailable destination never rolls back or
+locks the local vault. Path destinations inside the vault are rejected.
 
 ### Export / import
 

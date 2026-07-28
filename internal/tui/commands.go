@@ -79,6 +79,8 @@ func (m *Model) handleCommand(raw string) (string, tea.Cmd) {
 		return m.cmdReindex()
 	case "jrnl", "journal":
 		return m.cmdJournal()
+	case "backup":
+		return m.cmdBackup(args)
 	case "help":
 		return m.cmdHelp()
 	case "quit", "exit", "q":
@@ -86,6 +88,26 @@ func (m *Model) handleCommand(raw string) (string, tea.Cmd) {
 	default:
 		return fmt.Sprintf("unknown command: %q", cmd), nil
 	}
+}
+
+func (m *Model) cmdBackup(args []string) (string, tea.Cmd) {
+	if len(args) > 0 && args[0] == "cancel" {
+		if !m.backupRunning || m.backupCancel == nil {
+			return "no backup is running", nil
+		}
+		m.backupCancel()
+		return "canceling backup; local vault remains unchanged", nil
+	}
+	if len(args) > 0 {
+		return "usage: :backup [cancel]", nil
+	}
+	if m.backupRunning {
+		return "backup already running (:backup cancel to stop)", nil
+	}
+	if m.cfg.BackupMode == "off" || strings.TrimSpace(m.cfg.BackupDestination) == "" {
+		return "configure a remote or path in :config → Backup first", nil
+	}
+	return "", m.startBackup()
 }
 
 func (m *Model) cmdNew(args []string) (string, tea.Cmd) {

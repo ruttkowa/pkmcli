@@ -168,9 +168,10 @@ COMMAND PALETTE  —  press : or Ctrl+Space to open
   :reindex                  rescan notes, normalize manually added .md
                             files into Inbox, and atomically rebuild search
   :jrnl                     open or create today's unique Areas/Daily note
+  :backup [cancel]          run configured backup in background, or cancel
   :split [note]             open a new side-by-side pane
   :close                    close the focused pane
-  :config                   open settings (General / Keybindings / Variables / Issues)
+  :config                   open settings (General / Keys / Variables / Issues / Backup)
   :config export [path]     write config to file (default .pkm/config-export.yaml)
   :config import [path]     load config from file
   :quit  /  :exit           quit (session is saved)
@@ -221,7 +222,7 @@ TEMPLATE WORKFLOW
     {{id}} {{title}} {{created}} {{updated}} and any :config-defined
     variable are substituted on insertion.
 
-CONFIGURATION  —  :config  (Tab cycles General / Keybindings / Variables / Issues)
+CONFIGURATION  —  :config  (Tab cycles General / Keys / Variables / Issues / Backup)
   Theme preview: ←/→ updates the role legend and sample without changing the
   active theme. Enter confirms; Esc keeps the previously saved theme.
   Keybindings section: remaps the global chords (palette, pane picker, next
@@ -233,6 +234,10 @@ CONFIGURATION  —  :config  (Tab cycles General / Keybindings / Variables / Iss
   d deletes.
   Issues section: GitLab base URL plus project paths (group/repo). Set the
   read_api PAT in PKM_GITLAB_TOKEN; it is never written to config or cache.
+  Backup section: off, Git remote (SSH/HTTPS), or atomic bundle directory;
+  choose manual/periodic runs and a timeout. Git credential helpers/SSH
+  agents are used without hidden prompts. :backup cancel stops a run and
+  local state always wins when a destination fails.
   :config export / :config import move a whole config.yaml between vaults;
   importing an older or newer file never crashes — unknown fields are
   ignored and missing ones fall back to defaults.

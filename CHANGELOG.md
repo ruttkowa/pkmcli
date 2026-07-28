@@ -7,6 +7,8 @@ PATCH = fix-only). See `todo.md` for in-flight work.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-27
+
 ### Fixed
 - Help content and the breadcrumb are hard-clipped to their single-row
   width budgets, preventing the Help view from growing beyond the terminal
@@ -44,6 +46,11 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   four-step neutral ramp; Markdown headings, links, and code derive from the
   active theme. Configuration adds a non-persistent live role legend/preview,
   plus Solarized Light, Catppuccin Mocha, and Everforest. Issue #34.
+- Optional local-first backups can push through native Git to any SSH/HTTPS
+  remote or atomically write a portable bundle to a chosen path. Manual and
+  periodic runs stay in the background, have bounded timeouts, support
+  cancellation, never persist credentials, and leave local state untouched
+  on destination failure. Issue #28.
 
 ## [0.2.0] - 2026-07-22
 

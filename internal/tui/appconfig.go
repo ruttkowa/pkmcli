@@ -13,7 +13,7 @@ import (
 // currentConfigVersion is bumped whenever AppConfig's shape changes in a way
 // worth tracking. Import/export use it only informationally — loading never
 // fails on a mismatch; unknown fields are ignored and missing ones default.
-const currentConfigVersion = 2
+const currentConfigVersion = 3
 
 // AppConfig holds user preferences persisted to .pkm/config.yaml.
 type AppConfig struct {
@@ -29,6 +29,10 @@ type AppConfig struct {
 	Variables          map[string]string `yaml:"variables"` // user-defined {{name}} substitutions for :insert
 	GitLabURL          string            `yaml:"gitlab_url"`
 	GitLabProjects     []string          `yaml:"gitlab_projects"`
+	BackupMode         string            `yaml:"backup_mode"` // off, remote, or path
+	BackupDestination  string            `yaml:"backup_destination"`
+	BackupInterval     int               `yaml:"backup_interval_minutes"` // 0 means manual only
+	BackupTimeout      int               `yaml:"backup_timeout_seconds"`
 }
 
 // Keymap holds the remappable global keybindings. Values are bubbletea key
@@ -104,6 +108,8 @@ func defaultConfig() AppConfig {
 		Keymap:             defaultKeymap(),
 		Variables:          map[string]string{},
 		GitLabURL:          "https://gitlab.com",
+		BackupMode:         "off",
+		BackupTimeout:      60,
 	}
 }
 
@@ -161,6 +167,18 @@ func fillConfigDefaults(cfg *AppConfig) {
 		cfg.GitLabURL = "https://gitlab.com"
 	}
 	cfg.GitLabURL = strings.TrimRight(strings.TrimSpace(cfg.GitLabURL), "/")
+	switch cfg.BackupMode {
+	case "remote", "path":
+	default:
+		cfg.BackupMode = "off"
+	}
+	if cfg.BackupInterval < 0 {
+		cfg.BackupInterval = 0
+	}
+	if cfg.BackupTimeout <= 0 {
+		cfg.BackupTimeout = 60
+	}
+	cfg.BackupDestination = strings.TrimSpace(cfg.BackupDestination)
 	cfg.Version = currentConfigVersion
 }
 

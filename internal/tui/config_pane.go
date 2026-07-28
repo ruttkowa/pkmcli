@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -55,9 +56,10 @@ const (
 	secKeybindings
 	secVariables
 	secIssues
+	secBackup
 )
 
-var sectionNames = []string{"General", "Keybindings", "Variables", "Issues"}
+var sectionNames = []string{"General", "Keys", "Variables", "Issues", "Backup"}
 
 // varEditMode tracks whether the Variables section is idle or capturing text
 // for a new/edited entry.
@@ -81,6 +83,10 @@ const (
 	issueModeURL
 	issueModeProject
 )
+
+var backupModes = []string{"off", "remote", "path"}
+var backupIntervals = []int{0, 15, 60, 240}
+var backupTimeouts = []int{30, 60, 120}
 
 type configPane struct {
 	section configSection
@@ -109,6 +115,15 @@ type configPane struct {
 	gitlabURL      string
 	gitlabProjects []string
 	issueInput     textinput.Model
+
+	// Backup section
+	backupCursor      int
+	backupMode        int
+	backupDestination string
+	backupInterval    int
+	backupTimeout     int
+	backupEditing     bool
+	backupInput       textinput.Model
 }
 
 func newConfigPane(cfg AppConfig) configPane {
@@ -175,16 +190,48 @@ func newConfigPane(cfg AppConfig) configPane {
 	issueInput.Placeholder = "group/repo"
 	applyTextInputTheme(&issueInput)
 
+	backupInput := textinput.New()
+	backupInput.Prompt = ""
+	backupInput.Placeholder = "git URL or backup directory"
+	applyTextInputTheme(&backupInput)
+
+	backupMode := indexOfString(backupModes, cfg.BackupMode)
+	backupInterval := indexOfInt(backupIntervals, cfg.BackupInterval)
+	backupTimeout := indexOfInt(backupTimeouts, cfg.BackupTimeout)
+
 	return configPane{
-		values:         v,
-		kbKeys:         keymapToSlice(cfg.Keymap),
-		variables:      vars,
-		varNameInput:   nameInput,
-		varValueInput:  valueInput,
-		gitlabURL:      cfg.GitLabURL,
-		gitlabProjects: append([]string(nil), cfg.GitLabProjects...),
-		issueInput:     issueInput,
+		values:            v,
+		kbKeys:            keymapToSlice(cfg.Keymap),
+		variables:         vars,
+		varNameInput:      nameInput,
+		varValueInput:     valueInput,
+		gitlabURL:         cfg.GitLabURL,
+		gitlabProjects:    append([]string(nil), cfg.GitLabProjects...),
+		issueInput:        issueInput,
+		backupMode:        backupMode,
+		backupDestination: cfg.BackupDestination,
+		backupInterval:    backupInterval,
+		backupTimeout:     backupTimeout,
+		backupInput:       backupInput,
 	}
+}
+
+func indexOfString(values []string, value string) int {
+	for i, candidate := range values {
+		if candidate == value {
+			return i
+		}
+	}
+	return 0
+}
+
+func indexOfInt(values []int, value int) int {
+	for i, candidate := range values {
+		if candidate == value {
+			return i
+		}
+	}
+	return 0
 }
 
 func (c configPane) nextSection() configPane {
@@ -200,7 +247,7 @@ func (c configPane) prevSection() configPane {
 // busy reports whether the pane is mid-capture or mid-edit, so callers know
 // not to switch sections or treat Esc as "close the overlay".
 func (c configPane) busy() bool {
-	return c.kbCapturing || c.varMode != varModeNone || c.issueMode != issueModeNone
+	return c.kbCapturing || c.varMode != varModeNone || c.issueMode != issueModeNone || c.backupEditing
 }
 
 // cancelInPlace undoes an in-progress capture/edit. Returns ok=true if it
@@ -223,7 +270,56 @@ func (c configPane) cancelInPlace() (configPane, bool) {
 		c.issueInput.SetValue("")
 		return c, true
 	}
+	if c.backupEditing {
+		c.backupEditing = false
+		c.backupInput.SetValue("")
+		return c, true
+	}
 	return c, false
+}
+
+func (c configPane) updateBackup(msg tea.KeyMsg) configPane {
+	if c.backupEditing {
+		if msg.String() == "enter" {
+			c.backupDestination = strings.TrimSpace(c.backupInput.Value())
+			c.backupEditing = false
+			c.backupInput.SetValue("")
+		} else {
+			c.backupInput, _ = c.backupInput.Update(msg)
+		}
+		return c
+	}
+	switch msg.String() {
+	case "j", "down":
+		c.backupCursor = (c.backupCursor + 1) % 4
+	case "k", "up":
+		c.backupCursor = (c.backupCursor + 3) % 4
+	case "left", "h":
+		c = c.changeBackupValue(-1)
+	case "right", "l":
+		c = c.changeBackupValue(1)
+	case "enter":
+		if c.backupCursor == 1 {
+			c.backupInput.SetValue(c.backupDestination)
+			c.backupInput.Focus()
+			c.backupEditing = true
+		} else {
+			c = c.changeBackupValue(1)
+		}
+	}
+	return c
+}
+
+func (c configPane) changeBackupValue(direction int) configPane {
+	switch c.backupCursor {
+	case 0:
+		c.backupMode = (c.backupMode + direction + len(backupModes)) % len(backupModes)
+	case 2:
+		c.backupInterval = (c.backupInterval + direction + len(backupIntervals)) % len(backupIntervals)
+	case 3:
+		c.backupTimeout = (c.backupTimeout + direction + len(backupTimeouts)) % len(backupTimeouts)
+	}
+	return c
 }
 
 func (c configPane) updateIssues(msg tea.KeyMsg) configPane {
@@ -444,6 +540,8 @@ func (c configPane) render(width, height int) string {
 		rows, hint = c.renderVariables(t)
 	case secIssues:
 		rows, hint = c.renderIssues(t)
+	case secBackup:
+		rows, hint = c.renderBackup(t)
 	default:
 		rows, hint = c.renderGeneral(t)
 	}
@@ -466,6 +564,41 @@ func (c configPane) render(width, height int) string {
 		Height(height).
 		Padding(1, 2).
 		Render(strings.Join(lines, "\n"))
+}
+
+func (c configPane) renderBackup(t Theme) ([]string, string) {
+	interval := "manual"
+	if minutes := backupIntervals[c.backupInterval]; minutes > 0 {
+		interval = fmt.Sprintf("every %dm", minutes)
+	}
+	destination := c.backupDestination
+	if destination == "" {
+		destination = "not configured"
+	}
+	values := []string{
+		backupModes[c.backupMode],
+		destination,
+		interval,
+		fmt.Sprintf("%ds", backupTimeouts[c.backupTimeout]),
+	}
+	labels := []string{"Mode", "Destination", "Interval", "Timeout"}
+	rows := make([]string, len(labels))
+	for i := range labels {
+		prefix := "  "
+		valueStyle := lipgloss.NewStyle().Foreground(t.TextSecond)
+		if c.backupCursor == i {
+			prefix = "▶ "
+			valueStyle = valueStyle.Bold(true).Foreground(t.Accent)
+		}
+		value := valueStyle.Render(values[i])
+		if i == 1 && c.backupCursor == i && c.backupEditing {
+			value = c.backupInput.View()
+		}
+		rows[i] = lipgloss.NewStyle().Width(cfgLabelWidth).Foreground(t.TextMuted).Render(prefix+labels[i]) + value
+	}
+	rows = append(rows, "", lipgloss.NewStyle().Foreground(t.TextDim).Render(
+		"Remote uses native Git SSH/HTTPS credentials; path writes an atomic .bundle."))
+	return rows, "[↑↓] select   [←→] change   [Enter] edit   [Tab] switch section   [Esc] save & close"
 }
 
 func (c configPane) renderIssues(t Theme) ([]string, string) {

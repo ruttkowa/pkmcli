@@ -152,6 +152,11 @@ var allCommands = []cmdDef{
 		slots:   []slotKind{},
 	},
 	{
+		name: "backup", sig: "[cancel]", desc: "Back up now in the background, or cancel the running backup",
+		example: `:backup  or  :backup cancel`,
+		slots:   []slotKind{slotNone},
+	},
+	{
 		name:    "help",
 		sig:     "",
 		desc:    "Show help (keybindings, commands, workflows)",

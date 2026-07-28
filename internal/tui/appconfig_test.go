@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"pkm/internal/vault"
@@ -188,5 +189,55 @@ func TestGitLabConfigDefaultsRoundTripAndIssuesEditor(t *testing.T) {
 	pane = pane.updateIssues(key("d"))
 	if len(pane.gitlabProjects) != 1 {
 		t.Fatalf("projects after remove = %v", pane.gitlabProjects)
+	}
+}
+
+func TestBackupConfigRoundTripAndEditor(t *testing.T) {
+	v, err := vault.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := defaultConfig()
+	cfg.BackupMode = "remote"
+	cfg.BackupDestination = "git@example.test:me/vault.git"
+	cfg.BackupInterval = 60
+	cfg.BackupTimeout = 120
+	saveConfig(v, cfg)
+
+	loaded := loadConfig(v)
+	if loaded.BackupMode != cfg.BackupMode ||
+		loaded.BackupDestination != cfg.BackupDestination ||
+		loaded.BackupInterval != cfg.BackupInterval ||
+		loaded.BackupTimeout != cfg.BackupTimeout {
+		t.Fatalf("backup config round trip = %#v", loaded)
+	}
+
+	pane := newConfigPane(loaded)
+	pane.section = secBackup
+	pane.backupCursor = 1
+	pane = pane.updateBackup(key("enter"))
+	for range pane.backupDestination {
+		pane = pane.updateBackup(key("backspace"))
+	}
+	for _, r := range "/mnt/backup" {
+		pane = pane.updateBackup(key(string(r)))
+	}
+	pane = pane.updateBackup(key("enter"))
+	if pane.backupDestination != "/mnt/backup" {
+		t.Fatalf("edited destination = %q", pane.backupDestination)
+	}
+	activeTheme = NordTheme
+	rendered := pane.render(100, 28)
+	for _, want := range []string{"Backup", "Mode", "Destination", "Interval", "Timeout", "atomic .bundle"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("backup config render missing %q:\n%s", want, rendered)
+		}
+	}
+
+	loaded.BackupMode = "invalid"
+	loaded.BackupTimeout = 0
+	fillConfigDefaults(&loaded)
+	if loaded.BackupMode != "off" || loaded.BackupTimeout != 60 {
+		t.Fatalf("backup defaults = mode %q timeout %d", loaded.BackupMode, loaded.BackupTimeout)
 	}
 }
