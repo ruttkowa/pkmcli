@@ -101,7 +101,7 @@ func buildTaskOverviewRows(v *vault.Vault) []taskOverviewRow {
 		if len(notesWithTasks(n)) == 0 {
 			continue
 		}
-		if n.State == vault.StateProjects && n.Project != "" {
+		if n.Project != "" {
 			byProject[n.Project] = append(byProject[n.Project], n)
 		} else {
 			unassigned = append(unassigned, n)

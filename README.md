@@ -242,7 +242,7 @@ Typing inside an unclosed `[[fragment]]` opens a link-autosuggest dropdown:
 | `Tab` / `Enter` | Accept the highlighted suggestion |
 | `Esc` | Dismiss suggestions only — the editor itself stays open |
 
-The **Project** field autosuggests from active projects the same way (case-insensitive prefix match, same `↑`/`↓`/`Tab`/`Enter`/`Esc` keys). Saving with a project name typed in creates the project if it's new (subject to the max-4-active-projects limit), forces the note into `projects` state, and reveals it in the sidebar's project tree — the same thing `:add project`/`P` does. Clearing the field and saving detaches the note and returns it to Inbox.
+The **Project** field autosuggests from active projects the same way (case-insensitive prefix match, same `↑`/`↓`/`Tab`/`Enter`/`Esc` keys). Saving with a project name creates it if needed (subject to the max-4-active-projects limit) and adds a soft link in Projects without changing the note's current location. Clearing the field detaches only that link.
 
 The footer row shows word/line counts plus `Last saved: HH:MM:SS`; while the draft differs from the saved note (body, tags, project, or state), an `● Unsaved changes` marker appears next to it. This footer — not the global hotkey bar — is where save state lives.
 
@@ -388,7 +388,7 @@ The verb list reorders a little depending on where you opened it from — e.g. o
 | `:insert var <name>` | Insert a variable's value at the cursor — edit mode only | — |
 | `:open <query>` | Open by title; else full-text search; `#tag` filters by tag | `O` / `S` |
 | `:search <query>` | Fuzzy search titles and content, with a live-ranked dropdown as you type | — |
-| `:move <note> → <state>` | Move a note to a state (`->` also accepted) | `M` |
+| `:move <note> → <state>[/folder]` | Move a note, optionally into an Areas/Research/Archive folder (`->` also accepted) | `M` |
 | `:archive <note>` | Shortcut for `:move <note> → archive` | `A` |
 | `:delete <note>` | Move a note to trash (`Ctrl+Z` undoes it immediately — see note below) | `D` |
 | `:import [path]` | Open the import popover (path pre-filled if given) — see note below | `I` (opens directly, no palette) |
@@ -419,6 +419,11 @@ The verb list reorders a little depending on where you opened it from — e.g. o
 **`:export`** writes the open note's raw markdown to a path outside the vault — see [Export Popover](#export-popover). Always a copy; the vault note is never touched.
 
 **Valid states for `:move`:** `inbox` · `projects` · `areas` · `research` · `archive`
+
+Areas, Research, and Archive support unlimited metadata folders, for example
+`:move Router → areas/Networking`. These are navigation groups, not physical
+directories. Project membership is a separate soft link, so the same note
+can live in `areas/Networking` and appear under Projects → Homelab.
 
 ---
 

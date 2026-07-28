@@ -33,6 +33,10 @@ PATCH = fix-only). See `todo.md` for in-flight work.
   `PKM_GITLAB_TOKEN` authentication, cached open-issue sections in Tasks,
   manual `r` refresh, and Glamour-rendered detail/comments view. Issues
   remain virtual and outside the note index. Issue #15.
+- Areas, Research, and Archive now support collapsible metadata folders via
+  `:move note → areas/folder` (and equivalent states). Project membership
+  is now an independent soft link that no longer moves or removes a note
+  from its location. Issue #24.
 
 ## [0.2.0] - 2026-07-22
 

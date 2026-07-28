@@ -142,8 +142,8 @@ TRASH  —  :trash
 COMMAND PALETTE  —  press : or Ctrl+Space to open
   :new "Title"              create note in Inbox
   :new project <name>       create a new project (does not assign the open note)
-  :add project <name>       assign open note to a project (moves to Projects,
-                             creates the project if it doesn't exist yet)
+  :add project <name>       soft-link open note to a project without changing
+                             its location (creates the project if needed)
   :new template "Title"     create a new template note
   :insert <name>            insert a template into the current note
   :insert var <name>        insert a variable's value at the cursor (edit mode)
@@ -152,7 +152,8 @@ COMMAND PALETTE  —  press : or Ctrl+Space to open
                             ↑↓ to a hit + Enter opens it directly; a bare
                             Enter opens every hit as a list (Esc from a note
                             opened this way returns to that list)
-  :move <note> → <state>    move note to a state
+  :move <note> → <state>[/folder]
+                            move note; folders work in areas/research/archive
   :archive <note>           archive a note
   :delete <note>            move a note to trash (Ctrl+Z undoes it
                             immediately; :trash recovers it later)
@@ -197,14 +198,14 @@ CTRL SHORTCUTS
 PROJECT WORKFLOW
   1. Open a note (it starts in Inbox).
   2. Press P or type :add project <name> to assign it to a project.
-     → The note moves to Projects automatically.
+     → The note keeps its current location; Projects shows a soft link.
      → If the project name is new, it is created. Max 4 active projects.
   3. In the sidebar, expand Projects → expand the project folder to see its notes.
   4. Click the project folder header to open the project detail page:
      - See all attached notes.
      - Read the history log (attach / detach events).
      - Press e to add a Hemingway bridge entry (timestamped journal note).
-  5. To move a note out of a project: :move <note> → inbox  (or any other state).
+  5. Clearing Project in the editor detaches the soft link without moving it.
   6. Projects section shows an overview when no specific project is selected.
 
 TEMPLATE WORKFLOW
@@ -247,9 +248,10 @@ LINKS
   Click a link in the viewer to open it. Missing notes are created on open.
 
 KNOWLEDGE MODEL  (PARA-inspired)
-  Inbox → Projects / Areas / Research → Archive
+  Inbox → Areas / Research → Archive; Projects are independent soft links.
   All new notes land in Inbox.
   Use :move to promote notes between states.
+  Areas, Research, and Archive accept folders: :move note → areas/systems.
   Max 4 active projects at a time.
 `
 

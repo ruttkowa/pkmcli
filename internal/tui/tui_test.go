@@ -3534,8 +3534,8 @@ func TestHeadlessLineOpsChordOnlyInBody(t *testing.T) {
 
 // TestHeadlessEditorAssignsProject guards issue #25: assigning a project via
 // the editor's Project field must do everything :add project (cmdProject)
-// does — force State to StateProjects, record attach history, and reveal the
-// note in the sidebar's project tree — not just write the Project string.
+// does — record attach history and reveal the note in the sidebar's project
+// tree without changing its independent location (#24 soft-link model).
 func TestHeadlessEditorAssignsProject(t *testing.T) {
 	m := setupTUI(t)
 	if _, err := m.vault.Projects.Create("Homelab"); err != nil {
@@ -3560,8 +3560,8 @@ func TestHeadlessEditorAssignsProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindByTitle: %v", err)
 	}
-	if saved.State != vault.StateProjects {
-		t.Errorf("State = %q, want %q", saved.State, vault.StateProjects)
+	if saved.State != vault.StateInbox {
+		t.Errorf("State = %q, want location preserved as %q", saved.State, vault.StateInbox)
 	}
 	if saved.Project != "Homelab" {
 		t.Errorf("Project = %q, want %q", saved.Project, "Homelab")
@@ -3600,8 +3600,7 @@ func TestHeadlessEditorAssignsProject(t *testing.T) {
 
 // TestHeadlessEditorClearsProject guards the detach side of #25: clearing the
 // Project field on a project note in the editor must record a detach and
-// return the note to Inbox, not leave it orphaned in StateProjects with an
-// empty Project.
+// preserve its independent location.
 func TestHeadlessEditorClearsProject(t *testing.T) {
 	m := setupTUI(t)
 	if _, err := m.vault.Projects.Create("Homelab"); err != nil {
@@ -3612,7 +3611,8 @@ func TestHeadlessEditorClearsProject(t *testing.T) {
 		t.Fatalf("create note: %v", err)
 	}
 	n.Project = "Homelab"
-	if err := m.vault.SetState(n, vault.StateProjects); err != nil {
+	n.Folder = "Networking"
+	if err := m.vault.SetState(n, vault.StateAreas); err != nil {
 		t.Fatalf("SetState: %v", err)
 	}
 	m.index.Upsert(n)
@@ -3638,8 +3638,8 @@ func TestHeadlessEditorClearsProject(t *testing.T) {
 	if saved.Project != "" {
 		t.Errorf("Project = %q, want empty", saved.Project)
 	}
-	if saved.State != vault.StateInbox {
-		t.Errorf("State = %q, want %q", saved.State, vault.StateInbox)
+	if saved.State != vault.StateAreas || saved.Folder != "Networking" {
+		t.Errorf("location = %q/%q, want areas/Networking", saved.State, saved.Folder)
 	}
 
 	p, _ := m.vault.Projects.Get("Homelab")
@@ -3651,6 +3651,48 @@ func TestHeadlessEditorClearsProject(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected a detached history entry for the note")
+	}
+}
+
+func TestMoveIntoMetadataFolderAndSidebarTree(t *testing.T) {
+	m := setupTUI(t)
+	n, err := m.vault.Create("Folder target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.index.Upsert(n)
+	if msg, _ := m.cmdMove("move Folder target → areas/Systems"); msg != "" {
+		t.Fatalf("cmdMove = %q", msg)
+	}
+	saved, err := m.vault.FindByTitle("Folder target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.State != vault.StateAreas || saved.Folder != "Systems" {
+		t.Fatalf("location = %q/%q", saved.State, saved.Folder)
+	}
+
+	m.sidebar.expanded[vault.StateAreas] = true
+	m.sidebar = m.sidebar.refreshNotes()
+	var folderRow int = -1
+	for i, item := range m.sidebar.items() {
+		if item.isFolderEntry && item.state == vault.StateAreas && item.folder == "Systems" {
+			folderRow = i
+		}
+	}
+	if folderRow < 0 {
+		t.Fatal("Systems folder missing from Areas sidebar")
+	}
+	m.sidebar.cursor = folderRow
+	m.sidebar, _ = m.sidebar.update(key("enter"))
+	foundNote := false
+	for _, item := range m.sidebar.items() {
+		if item.isFolderNote && item.note != nil && item.note.ID == saved.ID {
+			foundNote = true
+		}
+	}
+	if !foundNote {
+		t.Fatal("folder note missing after expansion")
 	}
 }
 

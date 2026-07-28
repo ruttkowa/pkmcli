@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -19,6 +20,9 @@ type sidebarItem struct {
 	isTasks        bool // true for the virtual Tasks nav row
 	isProjectEntry bool // project folder row (collapsible)
 	isProjectNote  bool // note row under a project folder
+	isFolderEntry  bool // metadata folder under Areas/Research/Archive
+	isFolderNote   bool
+	folder         string
 	state          vault.NoteState
 	note           *vault.Note
 	project        *vault.Project
@@ -55,6 +59,7 @@ type sidebarModel struct {
 	projectsActive     bool                     // true when a project folder/note is the active view
 	expandedProjects   map[string]bool          // which project folders are open
 	projectNotesByName map[string][]*vault.Note // cached notes per project
+	expandedFolders    map[string]bool          // "<state>\x00<folder>" → expanded
 }
 
 func newSidebar(idx *index.Index, v *vault.Vault) sidebarModel {
@@ -67,6 +72,7 @@ func newSidebar(idx *index.Index, v *vault.Vault) sidebarModel {
 		notesByState:       map[vault.NoteState][]*vault.Note{},
 		expandedProjects:   map[string]bool{},
 		projectNotesByName: map[string][]*vault.Note{},
+		expandedFolders:    map[string]bool{},
 	}
 }
 
@@ -98,7 +104,7 @@ func (s sidebarModel) refreshNotes() sidebarModel {
 			if expanded {
 				var pNotes []*vault.Note
 				for _, n := range allNotes {
-					if n.Project == name && n.State == vault.StateProjects {
+					if n.Project == name {
 						pNotes = append(pNotes, n)
 					}
 				}
@@ -130,6 +136,31 @@ func (s sidebarModel) items() []sidebarItem {
 						}
 					}
 				}
+			} else if folderState(state) {
+				notes := s.notesByState[state]
+				folders := map[string]bool{}
+				for _, n := range notes {
+					if n.Folder == "" {
+						out = append(out, sidebarItem{state: state, note: n})
+					} else {
+						folders[n.Folder] = true
+					}
+				}
+				names := make([]string, 0, len(folders))
+				for name := range folders {
+					names = append(names, name)
+				}
+				sort.Strings(names)
+				for _, name := range names {
+					out = append(out, sidebarItem{isFolderEntry: true, state: state, folder: name})
+					if s.expandedFolders[folderKey(state, name)] {
+						for _, n := range notes {
+							if n.Folder == name {
+								out = append(out, sidebarItem{isFolderNote: true, state: state, folder: name, note: n})
+							}
+						}
+					}
+				}
 			} else {
 				for _, n := range s.notesByState[state] {
 					out = append(out, sidebarItem{state: state, note: n})
@@ -151,6 +182,14 @@ func (s sidebarModel) items() []sidebarItem {
 		out = append(out, sidebarItem{isSection: true, isTasks: true})
 	}
 	return out
+}
+
+func folderState(state vault.NoteState) bool {
+	return state == vault.StateAreas || state == vault.StateResearch || state == vault.StateArchive
+}
+
+func folderKey(state vault.NoteState, folder string) string {
+	return string(state) + "\x00" + folder
 }
 
 // clampCursor keeps the cursor within bounds after items() shrinks — e.g.
@@ -199,6 +238,10 @@ func (s *sidebarModel) refreshNotesPreservingCursor() {
 			item.project != nil && item.project.Name == old.project.Name:
 			s.cursor = i
 			return
+		case old.isFolderNote && item.isFolderEntry && item.state == old.state &&
+			item.folder == old.folder:
+			s.cursor = i
+			return
 		case old.isTemplates && old.note != nil && item.isSection && item.isTemplates:
 			s.cursor = i
 			return
@@ -219,6 +262,8 @@ func sameSidebarItem(a, b sidebarItem) bool {
 	case a.isProjectEntry || b.isProjectEntry:
 		return a.isProjectEntry && b.isProjectEntry && a.project != nil &&
 			b.project != nil && a.project.Name == b.project.Name
+	case a.isFolderEntry || b.isFolderEntry:
+		return a.isFolderEntry && b.isFolderEntry && a.state == b.state && a.folder == b.folder
 	default:
 		return a.isSection == b.isSection && a.isTemplates == b.isTemplates &&
 			a.isTasks == b.isTasks && a.state == b.state
@@ -276,10 +321,15 @@ func (s sidebarModel) update(msg tea.KeyMsg) (sidebarModel, tea.Cmd) {
 			s.selected = true
 			s.selectedNote = nil
 			s.selectedProject = item.project
-		} else if item.isProjectNote || (!item.isSection && !item.isTemplates && !item.isProjectEntry) {
+		} else if item.isFolderEntry && s.expandedFolders[folderKey(item.state, item.folder)] {
+			s.expandedFolders[folderKey(item.state, item.folder)] = false
+			s.selected = true
+			s.selectedNote = nil
+		} else if item.isProjectNote || item.isFolderNote ||
+			(!item.isSection && !item.isTemplates && !item.isProjectEntry && !item.isFolderEntry) {
 			// On a sub-entry: move cursor up to the parent.
 			for i := s.cursor - 1; i >= 0; i-- {
-				if items[i].isSection || items[i].isProjectEntry {
+				if items[i].isSection || items[i].isProjectEntry || items[i].isFolderEntry {
 					s.cursor = i
 					break
 				}
@@ -296,7 +346,7 @@ func (s sidebarModel) update(msg tea.KeyMsg) (sidebarModel, tea.Cmd) {
 			notes, _ := s.vault.ListAll()
 			var pNotes []*vault.Note
 			for _, n := range notes {
-				if n.Project == item.project.Name && n.State == vault.StateProjects {
+				if n.Project == item.project.Name {
 					pNotes = append(pNotes, n)
 				}
 			}
@@ -306,6 +356,11 @@ func (s sidebarModel) update(msg tea.KeyMsg) (sidebarModel, tea.Cmd) {
 			s.selected = true
 			s.selectedNote = nil
 			s.selectedProject = item.project
+		} else if item.isFolderEntry && !s.expandedFolders[folderKey(item.state, item.folder)] {
+			s.expandedFolders[folderKey(item.state, item.folder)] = true
+			s.activeState = item.state
+			s.selected = true
+			s.selectedNote = nil
 		} else if item.isSection && item.isTemplates && !s.templatesExpanded {
 			s.templatesExpanded = true
 			notes, _ := s.vault.ListByTag("template")
@@ -338,7 +393,7 @@ func (s sidebarModel) update(msg tea.KeyMsg) (sidebarModel, tea.Cmd) {
 			break
 		}
 		item := items[s.cursor]
-		if item.isProjectNote {
+		if item.isProjectNote || item.isFolderNote {
 			// Note under a project folder: open in main pane.
 			s.selectedNote = item.note
 			s.selected = true
@@ -351,7 +406,7 @@ func (s sidebarModel) update(msg tea.KeyMsg) (sidebarModel, tea.Cmd) {
 				notes, _ := s.vault.ListAll()
 				var pNotes []*vault.Note
 				for _, n := range notes {
-					if n.Project == item.project.Name && n.State == vault.StateProjects {
+					if n.Project == item.project.Name {
 						pNotes = append(pNotes, n)
 					}
 				}
@@ -362,6 +417,14 @@ func (s sidebarModel) update(msg tea.KeyMsg) (sidebarModel, tea.Cmd) {
 			s.projectsActive = true
 			s.templatesActive = false
 			s.selectedProject = item.project
+			s.selected = true
+			s.selectedNote = nil
+		} else if item.isFolderEntry {
+			key := folderKey(item.state, item.folder)
+			s.expandedFolders[key] = !s.expandedFolders[key]
+			s.activeState = item.state
+			s.templatesActive = false
+			s.projectsActive = false
 			s.selected = true
 			s.selectedNote = nil
 		} else if item.isSection && item.isTemplates {
@@ -438,6 +501,8 @@ func sidebarGlyphHit(item sidebarItem, x int) bool {
 	case item.isSection:
 		return rel >= 0 && rel < 2
 	case item.isProjectEntry:
+		return rel >= 2 && rel < 4
+	case item.isFolderEntry:
 		return rel >= 2 && rel < 4
 	default:
 		return false
@@ -555,7 +620,29 @@ func (s sidebarModel) render(width, height int, focused bool, openNoteID string)
 			default:
 				line = noteStyle.Render(content)
 			}
-		} else if item.isProjectNote {
+		} else if item.isFolderEntry {
+			exp := "  ▶ "
+			if s.expandedFolders[folderKey(item.state, item.folder)] {
+				exp = "  ▼ "
+			}
+			count := 0
+			for _, n := range s.notesByState[item.state] {
+				if n.Folder == item.folder {
+					count++
+				}
+			}
+			badge := " (" + strconv.Itoa(count) + ")"
+			titleW := max(1, inner-len([]rune(exp))-len([]rune(badge)))
+			content := exp + truncate(item.folder, titleW) + badge
+			switch {
+			case isCursor && focused:
+				line = cursorFocusStyle.Render(content)
+			case isCursor:
+				line = cursorBlurStyle.Render(content)
+			default:
+				line = noteStyle.Render(content)
+			}
+		} else if item.isProjectNote || item.isFolderNote {
 			const indent = "    " // 4 display chars (deeper indent, no dot)
 			titleW := inner - len([]rune(indent))
 			if titleW < 1 {

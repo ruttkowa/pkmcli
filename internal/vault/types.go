@@ -28,6 +28,7 @@ type Note struct {
 	Updated time.Time `yaml:"updated"`
 	State   NoteState `yaml:"state"`
 	Project string    `yaml:"project,omitempty"`
+	Folder  string    `yaml:"folder,omitempty"`
 	Tags    []string  `yaml:"tags,omitempty"`
 
 	// Runtime fields (not serialized)

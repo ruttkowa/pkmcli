@@ -220,12 +220,6 @@ func (m *Model) commitEditorDraft(sp *splitPane) {
 	default: // project cleared (oldProject was non-empty)
 		m.recordDetach(n) // n.Project still holds oldProject here
 		n.Project = ""
-		// An orphaned Projects-state note with no project is invalid; fall
-		// back to Inbox unless the user explicitly picked a different state
-		// in the same edit (n.State was already updated above in that case).
-		if n.State == vault.StateProjects {
-			n.State = vault.StateInbox
-		}
 		saveErr = m.vault.Save(n)
 		if saveErr == nil {
 			m.index.Upsert(n)
@@ -709,7 +703,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					notes, _ := m.vault.ListAll()
 					var pNotes []*vault.Note
 					for _, n := range notes {
-						if n.Project == p.Name && n.State == vault.StateProjects {
+						if n.Project == p.Name {
 							pNotes = append(pNotes, n)
 						}
 					}
@@ -1209,6 +1203,13 @@ func (m *Model) handleMouseClick(x, y int) tea.Cmd {
 				m.sidebar.projectsActive = item.state == vault.StateProjects
 				m.showSectionLanding(m.sidebar.activeState, m.sidebar.templatesActive)
 			}
+		} else if item.isFolderEntry {
+			key := folderKey(item.state, item.folder)
+			m.sidebar.expandedFolders[key] = !m.sidebar.expandedFolders[key]
+			m.sidebar.activeState = item.state
+			m.sidebar.projectsActive = false
+			m.sidebar.templatesActive = false
+			return nil
 		} else if item.isProjectEntry {
 			if onGlyph {
 				if m.sidebar.expandedProjects[item.project.Name] {
@@ -1222,7 +1223,7 @@ func (m *Model) handleMouseClick(x, y int) tea.Cmd {
 					allNotes, _ := m.vault.ListAll()
 					var pNotes []*vault.Note
 					for _, n := range allNotes {
-						if n.Project == item.project.Name && n.State == vault.StateProjects {
+						if n.Project == item.project.Name {
 							pNotes = append(pNotes, n)
 						}
 					}
@@ -1239,7 +1240,7 @@ func (m *Model) handleMouseClick(x, y int) tea.Cmd {
 			allNotes, _ := m.vault.ListAll()
 			var pNotes []*vault.Note
 			for _, n := range allNotes {
-				if n.Project == item.project.Name && n.State == vault.StateProjects {
+				if n.Project == item.project.Name {
 					pNotes = append(pNotes, n)
 				}
 			}

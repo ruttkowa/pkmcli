@@ -188,6 +188,9 @@ func (m *Model) cmdMove(raw string) (string, tea.Cmd) {
 	}
 	noteQuery := strings.TrimSpace(before)
 	stateStr := strings.TrimSpace(after)
+	stateName, folder, _ := strings.Cut(stateStr, "/")
+	stateName = strings.TrimSpace(stateName)
+	folder = strings.TrimSpace(folder)
 
 	n, err := m.vault.FindByTitle(noteQuery)
 	if err != nil {
@@ -195,7 +198,7 @@ func (m *Model) cmdMove(raw string) (string, tea.Cmd) {
 	}
 
 	var target vault.NoteState
-	switch strings.ToLower(stateStr) {
+	switch strings.ToLower(stateName) {
 	case "inbox":
 		target = vault.StateInbox
 	case "projects", "project":
@@ -207,12 +210,11 @@ func (m *Model) cmdMove(raw string) (string, tea.Cmd) {
 	case "archive":
 		target = vault.StateArchive
 	default:
-		return fmt.Sprintf("unknown state: %q", stateStr), nil
+		return fmt.Sprintf("unknown state: %q", stateName), nil
 	}
 
-	// Detach from project when leaving projects state.
-	if n.State == vault.StateProjects && n.Project != "" && target != vault.StateProjects {
-		m.recordDetach(n)
+	if folder != "" && target != vault.StateAreas && target != vault.StateResearch && target != vault.StateArchive {
+		return fmt.Sprintf("folders are only supported in Areas, Research, and Archive"), nil
 	}
 
 	if target == vault.StateProjects {
@@ -229,13 +231,14 @@ func (m *Model) cmdMove(raw string) (string, tea.Cmd) {
 		}
 	}
 
-	if err := m.vault.SetState(n, target); err != nil {
-		return fmt.Sprintf("error: %v", err), nil
+	n.State = target
+	if target == vault.StateAreas || target == vault.StateResearch || target == vault.StateArchive {
+		n.Folder = folder
+	} else {
+		n.Folder = ""
 	}
-
-	// Attach to project when entering projects state.
-	if target == vault.StateProjects && n.Project != "" {
-		m.recordAttach(n)
+	if err := m.vault.Save(n); err != nil {
+		return fmt.Sprintf("error: %v", err), nil
 	}
 
 	m.index.Upsert(n)
@@ -251,9 +254,7 @@ func (m *Model) cmdArchive(args []string) (string, tea.Cmd) {
 	if err != nil {
 		return fmt.Sprintf("not found: %q", query), nil
 	}
-	if n.State == vault.StateProjects && n.Project != "" {
-		m.recordDetach(n)
-	}
+	n.Folder = ""
 	if err := m.vault.SetState(n, vault.StateArchive); err != nil {
 		return fmt.Sprintf("error: %v", err), nil
 	}
@@ -275,7 +276,7 @@ func (m *Model) cmdDelete(args []string) (string, tea.Cmd) {
 	if err != nil {
 		return fmt.Sprintf("not found: %q", query), nil
 	}
-	if n.State == vault.StateProjects && n.Project != "" {
+	if n.Project != "" {
 		m.recordDetach(n)
 	}
 	oldNote := *n
@@ -740,8 +741,8 @@ func (m *Model) cmdProject(args []string) (string, tea.Cmd) {
 
 // assignProjectToNote attaches n to the named project: ensures the project
 // exists (creating it if new, erroring if the max-active-projects limit is
-// reached), records attach/detach history, forces the note into
-// vault.StateProjects, persists it, updates the index, and reveals the note
+// reached), records attach/detach history, persists the independent soft
+// link without changing the note's location, updates the index, and reveals it
 // in the sidebar's project tree. Shared by cmdProject (:add project /
 // Shift+P) and the editor's Project field (commitEditorDraft) so both paths
 // behave identically.
@@ -757,12 +758,7 @@ func (m *Model) assignProjectToNote(n *vault.Note, projectName string) error {
 
 	n.Project = projectName
 
-	// Always move to projects state when assigning a project.
-	if n.State != vault.StateProjects {
-		if err := m.vault.SetState(n, vault.StateProjects); err != nil {
-			return err
-		}
-	} else if err := m.vault.Save(n); err != nil {
+	if err := m.vault.Save(n); err != nil {
 		return err
 	}
 

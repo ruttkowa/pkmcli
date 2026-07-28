@@ -22,12 +22,15 @@ index. Everything else remains local-first.
 
 ## Knowledge Management Model (PARA-inspired)
 
-States: **Inbox → Projects / Areas / Research → Archive**
+Locations: **Inbox → Areas / Research → Archive**. Areas, Research, and
+Archive may contain metadata folders. Projects are independent soft links:
+a note keeps its location/folder while belonging to a project.
 
 Rules:
 - All new notes land in Inbox
 - Notes must be explicitly promoted to another state
 - Maximum 4 active projects
+- A note may belong to one project independently of its location
 - Archive is the final inactive state
 
 ## Storage Format

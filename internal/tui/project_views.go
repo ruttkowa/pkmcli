@@ -115,7 +115,7 @@ func renderProjectsOverview(projects []*vault.Project, allNotes []*vault.Note, w
 		// Gather notes for this project.
 		var pNotes []*vault.Note
 		for _, n := range allNotes {
-			if n.Project == p.Name && n.State == vault.StateProjects {
+			if n.Project == p.Name {
 				pNotes = append(pNotes, n)
 			}
 		}
