@@ -1,0 +1,50 @@
+name: Cut Milestone
+
+on:
+  workflow_dispatch:
+    inputs:
+      title:
+        description: 'Milestone title'
+        required: true
+      description:
+        description: 'Milestone description'
+        required: false
+      due_on:
+        description: 'Due date (YYYY-MM-DD), optional'
+        required: false
+      issues:
+        description: 'Comma-separated issue numbers to attach'
+        required: false
+
+permissions:
+  issues: write
+
+jobs:
+  milestone:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create milestone
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TITLE: ${{ inputs.title }}
+          DESCRIPTION: ${{ inputs.description }}
+          DUE_ON: ${{ inputs.due_on }}
+        run: |
+          args=(-f "title=${TITLE}")
+          if [ -n "$DESCRIPTION" ]; then args+=(-f "description=${DESCRIPTION}"); fi
+          if [ -n "$DUE_ON" ]; then args+=(-f "due_on=${DUE_ON}T00:00:00Z"); fi
+          number=$(gh api "repos/${GITHUB_REPOSITORY}/milestones" "${args[@]}" --jq .number)
+          echo "Created milestone #$number: $TITLE"
+
+      - name: Attach issues
+        if: ${{ inputs.issues != '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUES: ${{ inputs.issues }}
+          TITLE: ${{ inputs.title }}
+        run: |
+          IFS=',' read -ra nums <<< "$ISSUES"
+          for n in "${nums[@]}"; do
+            n_trimmed=$(echo "$n" | xargs)
+            gh issue edit "$n_trimmed" --milestone "$TITLE"
+          done

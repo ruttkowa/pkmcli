@@ -1,0 +1,44 @@
+name: Cut Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to create (e.g. v0.2.1)'
+        required: true
+      target:
+        description: 'Commit SHA or branch to tag'
+        required: true
+        default: 'main'
+      title:
+        description: 'Release title (defaults to the tag)'
+        required: false
+      notes:
+        description: 'Release notes body (auto-generated from commits if omitted)'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create and publish release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          TARGET: ${{ inputs.target }}
+          TITLE: ${{ inputs.title }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          title="${TITLE:-$TAG}"
+          if [ -n "$NOTES" ]; then
+            gh release create "$TAG" --target "$TARGET" --title "$title" --notes "$NOTES"
+          else
+            gh release create "$TAG" --target "$TARGET" --title "$title" --generate-notes
+          fi
