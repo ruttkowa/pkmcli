@@ -23,13 +23,18 @@ jobs:
   milestone:
     runs-on: ubuntu-latest
     steps:
-      - name: Create milestone
+      - name: Create milestone (idempotent)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TITLE: ${{ inputs.title }}
           DESCRIPTION: ${{ inputs.description }}
           DUE_ON: ${{ inputs.due_on }}
         run: |
+          existing=$(gh api "repos/${GITHUB_REPOSITORY}/milestones?state=all" --jq ".[] | select(.title==\"${TITLE}\") | .number" | head -n1)
+          if [ -n "$existing" ]; then
+            echo "Milestone \"$TITLE\" already exists as #$existing, skipping creation."
+            exit 0
+          fi
           args=(-f "title=${TITLE}")
           if [ -n "$DESCRIPTION" ]; then args+=(-f "description=${DESCRIPTION}"); fi
           if [ -n "$DUE_ON" ]; then args+=(-f "due_on=${DUE_ON}T00:00:00Z"); fi
@@ -46,5 +51,5 @@ jobs:
           IFS=',' read -ra nums <<< "$ISSUES"
           for n in "${nums[@]}"; do
             n_trimmed=$(echo "$n" | xargs)
-            gh issue edit "$n_trimmed" --milestone "$TITLE"
+            gh issue edit "$n_trimmed" -R "$GITHUB_REPOSITORY" --milestone "$TITLE"
           done
