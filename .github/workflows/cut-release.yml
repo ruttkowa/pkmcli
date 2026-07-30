@@ -21,14 +21,14 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  create-release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Create and publish release
+      - name: Create and publish release (idempotent)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag }}
@@ -36,9 +36,26 @@ jobs:
           TITLE: ${{ inputs.title }}
           NOTES: ${{ inputs.notes }}
         run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, skipping creation."
+            exit 0
+          fi
           title="${TITLE:-$TAG}"
           if [ -n "$NOTES" ]; then
             gh release create "$TAG" --target "$TARGET" --title "$title" --notes "$NOTES"
           else
             gh release create "$TAG" --target "$TARGET" --title "$title" --generate-notes
           fi
+
+  # Releases created above use the default GITHUB_TOKEN, which GitHub
+  # deliberately excludes from triggering other workflows (anti-recursion
+  # guard) -- so the `release: published` trigger on release.yml never
+  # fires for these. Calling it directly as a reusable workflow sidesteps
+  # that; a release published by a human via the UI still triggers it
+  # normally through the `release:` event.
+  build:
+    needs: create-release
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ inputs.tag }}
+    secrets: inherit

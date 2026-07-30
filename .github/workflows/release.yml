@@ -3,6 +3,12 @@ name: Release
 on:
   release:
     types: [published]
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag to attach binaries to (defaults to the triggering release)'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -10,6 +16,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.event.release.tag_name }}
     strategy:
       matrix:
         include:
@@ -42,7 +50,7 @@ jobs:
 
       - name: Package
         run: |
-          archive="pkm_${{ github.event.release.tag_name }}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          archive="pkm_${TAG}_${{ matrix.goos }}_${{ matrix.goarch }}"
           if [ "${{ matrix.goos }}" = "windows" ]; then
             zip "${archive}.zip" pkm.exe
             echo "ASSET=${archive}.zip" >> "$GITHUB_ENV"
@@ -54,4 +62,4 @@ jobs:
       - name: Upload release asset
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ github.event.release.tag_name }}" "$ASSET" --clobber
+        run: gh release upload "$TAG" "$ASSET" --clobber
