@@ -18,19 +18,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TAG: ${{ inputs.tag || github.event.release.tag_name }}
-    strategy:
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-          - goos: linux
-            goarch: arm64
-          - goos: darwin
-            goarch: amd64
-          - goos: darwin
-            goarch: arm64
-          - goos: windows
-            goarch: amd64
     steps:
       - uses: actions/checkout@v4
 
@@ -41,23 +28,15 @@ jobs:
       - name: Build
         env:
           CGO_ENABLED: 0
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-        run: |
-          out=pkm
-          if [ "$GOOS" = "windows" ]; then out=pkm.exe; fi
-          go build -o "$out" ./cmd/pkm
+          GOOS: linux
+          GOARCH: amd64
+        run: go build -o pkm ./cmd/pkm
 
       - name: Package
         run: |
-          archive="pkm_${TAG}_${{ matrix.goos }}_${{ matrix.goarch }}"
-          if [ "${{ matrix.goos }}" = "windows" ]; then
-            zip "${archive}.zip" pkm.exe
-            echo "ASSET=${archive}.zip" >> "$GITHUB_ENV"
-          else
-            tar -czf "${archive}.tar.gz" pkm
-            echo "ASSET=${archive}.tar.gz" >> "$GITHUB_ENV"
-          fi
+          archive="pkm_${TAG}_linux_amd64"
+          tar -czf "${archive}.tar.gz" pkm
+          echo "ASSET=${archive}.tar.gz" >> "$GITHUB_ENV"
 
       - name: Upload release asset
         env:
